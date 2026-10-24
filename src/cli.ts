@@ -456,14 +456,14 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
     check(remote, "public URL", `${PUBLIC_URL}/healthz ${remote ? "reachable" : "unreachable (is the tunnel running? pm2 status locked-tunnel)"}`);
     const remoteApi = await fetch(`${PUBLIC_URL}/api/health`, { signal: AbortSignal.timeout(8_000) }).then((r) => r.status).catch(() => 0);
     if (remote) check(remoteApi === 404, "api via tunnel", remoteApi === 404 ? "not exposed (404)" : `answered ${remoteApi}!`);
-    const skill = join(homedir(), ".claude", "skills", "locked");
+    const skill = skillTarget();
     check(existsSync(join(skill, "SKILL.md")), "claude skill", existsSync(skill) ? skill : "not installed (locked install-skill)");
     return bad ? EXIT.failed : EXIT.ok;
   },
 
   async "install-skill"() {
     const source = join(import.meta.dir, "..", "skill");
-    const target = join(homedir(), ".claude", "skills", "locked");
+    const target = skillTarget();
     mkdirSync(dirname(target), { recursive: true });
     if (existsSync(target) || lstatExists(target)) {
       if (lstatSync(target).isSymbolicLink() && readlinkSync(target) === source) return out(`Already installed: ${target} → ${source}`);
@@ -485,6 +485,11 @@ function lstatExists(p: string) {
   } catch {
     return false;
   }
+}
+
+/** Where Claude Code looks for user skills: $CLAUDE_CONFIG_DIR/skills, else ~/.claude/skills. */
+function skillTarget() {
+  return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "skills", "locked");
 }
 
 const HELP = `locked: hand secrets to Claude through a link instead of the chat.

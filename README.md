@@ -16,7 +16,7 @@ Claude ── locked inject ──▶ one-time snippet ──▶ page fetches th
 bun install
 ln -s "$PWD/bin/locked" ~/.bun/bin/locked   # put `locked` on PATH
 locked setup --tunnel                        # ~/.locked, Keychain master key, cloudflared tunnel + DNS
-locked install-skill                         # teaches Claude Code to use it (~/.claude/skills/locked)
+locked install-skill                         # teaches Claude Code to use it ($CLAUDE_CONFIG_DIR or ~/.claude, then skills/locked)
 pm2 start ecosystem.config.cjs && pm2 save   # run it in the background, restarted on crash and at login
 locked doctor
 ```
