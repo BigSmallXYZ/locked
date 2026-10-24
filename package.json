@@ -1,0 +1,20 @@
+{
+  "name": "locked",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hand secrets to Claude through a link instead of the chat.",
+  "bin": {
+    "locked": "bin/locked"
+  },
+  "scripts": {
+    "serve": "bun src/cli.ts serve",
+    "fixtures": "bun test/fixtures/serve.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^7.0.2"
+  }
+}
