@@ -25,6 +25,7 @@ const auth = { Authorization: `Bearer ${token}` };
 beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), "locked-phone-"));
   s = await startServers({ publicPort: 0, agentPort: 0, dbPath: join(dir, "t.db"), keyPath: join(dir, "k"), keystore: "file", token, native: null, pusher: fakePusher });
+  s.ctx.clientIpHeader = "cf-connecting-ip"; // as behind Cloudflare, so tests can pose as many clients
   pub = `http://127.0.0.1:${s.publicServer.port}`;
   agent = `http://127.0.0.1:${s.agentServer.port}`;
 });
@@ -128,9 +129,9 @@ describe("phone", () => {
 
     const again = (await phone("POST", "pair/begin", { code: started.code })).body;
     pushed.length = 0;
-    const finished = await phone("POST", "pair/finish", { pairingId: again.pairingId, credential: passkey.create(again.publicKey.challenge, pub), subscription: sub, name: "Anderson's test phone" });
+    const finished = await phone("POST", "pair/finish", { pairingId: again.pairingId, credential: passkey.create(again.publicKey.challenge, pub), subscription: sub, name: "Test phone" });
     expect(finished.status).toBe(200);
-    expect(finished.body).toMatchObject({ name: "Anderson's test phone", pushOk: true });
+    expect(finished.body).toMatchObject({ name: "Test phone", pushOk: true });
     expect(pushed).toHaveLength(1);
     expect(pushed[0]!.sub).toEqual(sub);
     expect(pushed[0]!.payload).toMatchObject({ t: "info", title: "Locked is paired" });
@@ -139,7 +140,7 @@ describe("phone", () => {
     expect((await phone("POST", "pair/begin", { code: started.code })).status).toBe(404);
     expect((await api("GET", `/api/pairings/${started.pairing.id}/wait?timeout=1`)).body.pairing).toMatchObject({ status: "paired", deviceId: finished.body.deviceId, pushOk: true });
     const devices = (await api("GET", "/api/devices")).body.devices;
-    expect(devices).toEqual([expect.objectContaining({ id: finished.body.deviceId, name: "Anderson's test phone", push: true })]);
+    expect(devices).toEqual([expect.objectContaining({ id: finished.body.deviceId, name: "Test phone", push: true })]);
     first = { started, begun: again, finished, passkey, sub };
   });
 
@@ -153,7 +154,7 @@ describe("phone", () => {
     expect(pushed).toHaveLength(1);
     const payload = pushed[0]!.payload as Extract<PushPayload, { t: "share" }>;
     expect(payload).toMatchObject({ t: "share", title: "Phone login" });
-    expect(payload.body).toContain("Claude: sign in to the GitHub app");
+    expect(payload.body).toContain("Agent: sign in to the GitHub app");
     expect(JSON.stringify(pushed)).not.toContain("phone-canary-pw");
     const t = payload.s;
 

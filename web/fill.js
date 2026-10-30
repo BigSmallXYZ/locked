@@ -5,14 +5,14 @@
 import { buildSubmitPost, cryptoAvailable } from "./fill-crypto.js";
 
 const RETENTIONS = [
-  ["once", "Delete after first use", "Deleted 5 minutes after Claude first uses it, so multi-step logins still work."],
+  ["once", "Delete after first use", "Deleted 5 minutes after your agent first uses it, so multi-step logins still work."],
   ["1h", "Keep 1 hour", "Kept for 1 hour, then deleted."],
   ["24h", "Keep 24 hours", "Kept for 24 hours, then deleted."],
   ["forever", "Keep until I revoke", "Kept, encrypted, until you revoke it."],
 ];
 
 const DONE_NOTE = {
-  once: "Locked deletes it 5 minutes after Claude first uses it.",
+  once: "Locked deletes it 5 minutes after your agent first uses it.",
   "1h": "Locked deletes it after 1 hour.",
   "24h": "Locked deletes it after 24 hours.",
   forever: "Locked keeps it until you revoke it.",
@@ -33,32 +33,32 @@ const INPUT_ATTRS = {
 const REVEALABLE = new Set(["password", "new-password", "apikey"]);
 
 const STATES = {
-  done: { icon: "check", tone: "ok", title: "Sent to Claude", body: "You can close this tab." },
+  done: { icon: "check", tone: "ok", title: "Sent to your agent", body: "You can close this tab." },
   filled: {
     icon: "check",
     tone: "ok",
     title: "Already sent",
-    body: "This request has already been answered. If that wasn't you, tell Claude right away.",
+    body: "This request has already been answered. If that wasn't you, tell your agent right away.",
   },
   declined: { icon: "x", tone: "neutral", title: "Declined", body: "This request was declined, so nothing was sent. You can close this tab." },
   expired: {
     icon: "clock",
     tone: "warn",
     title: "This link has expired",
-    body: "Nothing was sent. If you still want to share it, ask Claude for a new link.",
+    body: "Nothing was sent. If you still want to share it, ask your agent for a new link.",
   },
   revoked: { icon: "ban", tone: "neutral", title: "This request was revoked", body: "The link doesn't work any more. You can close this tab." },
   missing: {
     icon: "unlink",
     tone: "neutral",
     title: "This Locked link doesn't exist or has been removed",
-    body: "Check that you opened the whole link, or ask Claude for a new one.",
+    body: "Check that you opened the whole link, or ask your agent for a new one.",
   },
   broken: {
     icon: "alert",
     tone: "danger",
     title: "This link can't be used",
-    body: "The page is missing some details, so nothing can be sent. Ask Claude for a new link.",
+    body: "The page is missing some details, so nothing can be sent. Ask your agent for a new link.",
   },
 };
 const TERMINAL = ["filled", "declined", "expired", "revoked", "missing"];
@@ -391,15 +391,15 @@ function renderOpen(d) {
     "section",
     { class: "card", "aria-labelledby": "req-title" },
     h("h1", { id: "req-title", class: "title" }, label),
-    h("p", { class: "ask-label" }, "Claude is asking for:"),
+    h("p", { class: "ask-label" }, "Your agent is asking for:"),
     h("p", { class: reason ? "reason" : "reason is-empty" }, reason || "No reason given."),
     siteBlock(site),
     d.firstTimeSite
-      ? h("div", { class: "notice", role: "note" }, icon("alert", 18), h("p", null, "First time Claude asks for a secret for this site — make sure you started this."))
+      ? h("div", { class: "notice", role: "note" }, icon("alert", 18), h("p", null, "First time your agent asks for a secret for this site — make sure you started this."))
       : null,
     d.level === "sealed"
-      ? h("p", { class: "badge badge-sealed" }, icon("shield", 16), h("span", null, "Sealed — Claude can't read it; you approve each use"))
-      : h("p", { class: "badge badge-normal" }, icon("eye", 16), h("span", null, "Claude can read this")),
+      ? h("p", { class: "badge badge-sealed" }, icon("shield", 16), h("span", null, "Sealed — your agent can't read it; you approve each use"))
+      : h("p", { class: "badge badge-normal" }, icon("eye", 16), h("span", null, "Your agent can read this")),
   );
 
   // The answer form. A native submit must never happen: the first listener cancels it.
@@ -415,7 +415,7 @@ function renderOpen(d) {
     }
     return fieldBlock(f, i, hint);
   });
-  const fieldset = h("fieldset", { class: "fields" }, h("legend", { class: "sr-only" }, "Fields Claude asked for"), controls.map((c) => c.el));
+  const fieldset = h("fieldset", { class: "fields" }, h("legend", { class: "sr-only" }, "Fields your agent asked for"), controls.map((c) => c.el));
   const retention = retentionBlock(d.retention);
   const formError = alertBox();
   const sendLabel = h("span", null, "Send securely");
@@ -438,8 +438,8 @@ function renderOpen(d) {
   const declinePanel = h(
     "div",
     { class: "decline", hidden: true },
-    h("div", null, declineTitle, h("p", { class: "muted" }, "Claude won't get anything. You can tell it why.")),
-    h("div", { class: "field" }, h("label", { for: "decline-note" }, "Note for Claude", h("span", { class: "optional" }, " (optional)")), note),
+    h("div", null, declineTitle, h("p", { class: "muted" }, "Your agent won't get anything. You can tell it why.")),
+    h("div", { class: "field" }, h("label", { for: "decline-note" }, "Note for your agent", h("span", { class: "optional" }, " (optional)")), note),
     declineError.el,
     h("div", { class: "actions" }, confirmDecline, backBtn),
   );
@@ -504,7 +504,7 @@ function renderOpen(d) {
     if (reply.ok) {
       clearInputs();
       form.reset();
-      const extra = d.level === "sealed" ? " It's sealed: Claude can't read it, and you'll approve each use." : "";
+      const extra = d.level === "sealed" ? " It's sealed: your agent can't read it, and you'll approve each use." : "";
       return showState("done", { label, note: (DONE_NOTE[keep] || "") + extra, focus: true });
     }
     const terminal = terminalFrom(reply);

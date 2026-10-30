@@ -1,4 +1,4 @@
-// The only listener cloudflared reaches. It serves fill pages, approve pages and the
+// The only listener the tunnel reaches. It serves fill pages, approve pages and the
 // one-time autofill payload. Nothing here can list requests or read a secret by id.
 
 import type { Server } from "bun";
@@ -95,6 +95,7 @@ async function notFound() {
 // --- rate limiting (per client IP, fixed one-minute windows) ---
 
 const hits = new Map<string, { n: number; reset: number }>();
+export const resetRateLimits = () => hits.clear();
 function limited(key: string, max: number): boolean {
   const t = Date.now();
   const h = hits.get(key);
@@ -109,9 +110,10 @@ setInterval(() => {
   for (const [k, h] of hits) if (h.reset <= t) hits.delete(k);
 }, 60_000).unref();
 
-function clientIp(req: Request, server: Server<unknown>) {
-  // cloudflared connects from loopback; Cloudflare puts the real client in CF-Connecting-IP.
-  return req.headers.get("cf-connecting-ip") ?? server.requestIP(req)?.address ?? "unknown";
+function clientIp(ctx: Ctx, req: Request, server: Server<unknown>) {
+  // Tunnels connect from loopback, so without a trusted header every client shares one bucket.
+  const forwarded = ctx.clientIpHeader ? req.headers.get(ctx.clientIpHeader) : null;
+  return forwarded ?? server.requestIP(req)?.address ?? "unknown";
 }
 
 /** POSTs must come from our own pages: JSON body, and an Origin (if any) on this host. */
@@ -198,7 +200,7 @@ export function publicHandler(ctx: Ctx, pusher: Pusher) {
   return async function fetch(req: Request, server: Server<unknown>): Promise<Response> {
     const url = new URL(req.url);
     const [, head, arg, ...rest] = url.pathname.split("/");
-    const ip = clientIp(req, server);
+    const ip = clientIp(ctx, req, server);
     try {
       if (url.pathname === "/healthz") return new Response("ok", { headers: headers({ "Content-Type": "text/plain" }) });
 

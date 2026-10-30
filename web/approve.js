@@ -2,15 +2,15 @@
 // ApprovePost { decision } to location.pathname. Request data is only ever set as text.
 
 const STATES = {
-  approved: { icon: "check", tone: "ok", title: "Approved", body: "Claude can go ahead with this one use. You can close this tab." },
-  denied: { icon: "x", tone: "neutral", title: "Denied", body: "Claude won't get it this time. You can close this tab." },
-  expired: { icon: "clock", tone: "warn", title: "This approval has expired", body: "Nothing was used. If Claude still needs it, it will ask again." },
+  approved: { icon: "check", tone: "ok", title: "Approved", body: "Your agent can go ahead with this one use. You can close this tab." },
+  denied: { icon: "x", tone: "neutral", title: "Denied", body: "Your agent won't get it this time. You can close this tab." },
+  expired: { icon: "clock", tone: "warn", title: "This approval has expired", body: "Nothing was used. If your agent still needs it, it will ask again." },
   used: { icon: "check", tone: "neutral", title: "Already used", body: "This approval has already been acted on. Nothing more to do here." },
   missing: {
     icon: "unlink",
     tone: "neutral",
     title: "This Locked link doesn't exist or has been removed",
-    body: "Check that you opened the whole link, or ask Claude for a new one.",
+    body: "Check that you opened the whole link, or ask your agent for a new one.",
   },
   broken: { icon: "alert", tone: "danger", title: "This link can't be used", body: "The page is missing some details. Nothing was approved." },
 };
@@ -223,7 +223,7 @@ function howText(via, site) {
     case "copy":
       return ["clipboard", "Put it on your Mac's clipboard for 30 s"];
     case "get":
-      return ["key", "Show the value to Claude"];
+      return ["key", "Show the value to your agent"];
     default:
       return ["key", typeof via === "string" && via ? via : "Use it once"];
   }
@@ -252,7 +252,7 @@ function renderOpen(d) {
       "section",
       { class: "card", "aria-labelledby": "req-title" },
       h("p", { class: "eyebrow" }, "Approval needed"),
-      h("h1", { id: "req-title", class: "title" }, "Claude wants to use ", h("strong", null, label)),
+      h("h1", { id: "req-title", class: "title" }, "Your agent wants to use ", h("strong", null, label)),
       h(
         "dl",
         { class: "details" },
@@ -261,7 +261,7 @@ function renderOpen(d) {
         detail("How", h("span", { class: "how" }, icon(howIcon, 20), h("span", null, how))),
         fields.length ? detail(fields.length === 1 ? "Field" : "Fields", h("ul", { class: "chips" }, fields.map((f) => h("li", { class: "chip" }, f)))) : null,
       ),
-      h("p", { class: "caution" }, "Only approve if you asked Claude to do this just now."),
+      h("p", { class: "caution" }, "Only approve if you asked your agent to do this just now."),
     ),
     h("section", { class: "card stack", "aria-label": "Your decision" }, errBox, h("div", { class: "actions actions-split" }, approveBtn, denyBtn)),
   );

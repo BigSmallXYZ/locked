@@ -1,6 +1,6 @@
 // The paired phone's web app (/phone/). Three screens:
 //   #pair=CODE  pair this phone: allow notifications, create a passkey (server/phone.ts pairBegin/pairFinish)
-//   #s=TOKEN    a share Claude sent: Face ID releases the values, sealed to a key made here
+//   #s=TOKEN    a share your agent sent: Face ID releases the values, sealed to a key made here
 //   (nothing)   what's paired, and recent shares
 // Values only ever live in this page's memory, and are wiped on Done, on expiry, or after a while in
 // the background. Must stay in step with sealFillEnvelope(…, PHONE_INFO) in src/crypto.ts:
@@ -165,8 +165,8 @@ function pairView(code) {
     "section",
     { class: "card" },
     h("p", { class: "eyebrow" }, "Pair this phone"),
-    h("h1", { class: "title" }, "Get credentials from Claude here"),
-    h("p", { class: "muted lead" }, `When Claude needs you to use a login on this phone, it sends a notification. Tapping it opens the credential after ${unlockWord}.`),
+    h("h1", { class: "title" }, "Get credentials from your agent here"),
+    h("p", { class: "muted lead" }, `When your agent needs you to use a login on this phone, it sends a notification. Tapping it opens the credential after ${unlockWord}.`),
     h("div", { class: "fields" }, h("div", { class: "field" }, h("label", { for: "code" }, "Code from the Mac"), codeInput), h("div", { class: "field" }, h("label", { for: "name" }, "Name for this phone"), nameInput)),
     status,
     h("div", { class: "actions" }, step1),
@@ -235,7 +235,7 @@ function pairView(code) {
         stateCard(
           `Paired as “${res.name}”`,
           res.pushOk
-            ? "A first notification is on its way. Leave notifications on: Claude's credentials arrive the same way. You can close this now."
+            ? "A first notification is on its way. Leave notifications on: your agent's credentials arrive the same way. You can close this now."
             : "Paired, but the first notification didn't go through. Check Settings → Notifications → Locked, then run `locked phone test` on the Mac.",
           res.pushOk ? "tone-ok" : "tone-warn",
         ),
@@ -285,7 +285,7 @@ async function shareView(token) {
   try {
     info = await api("GET", `s/${token}`);
   } catch (e) {
-    return show(stateCard(e.status === 410 ? "This share has ended" : "Couldn't open it", e.status === 410 ? "It expired or was closed. Ask Claude to send it again." : e.message, "tone-warn"));
+    return show(stateCard(e.status === 410 ? "This share has ended" : "Couldn't open it", e.status === 410 ? "It expired or was closed. Ask your agent to send it again." : e.message, "tone-warn"));
   }
 
   let session = null;
@@ -317,10 +317,10 @@ async function shareView(token) {
   startTimer(info.expiresAt, () => ended("This share has ended", "The values are wiped from this phone."));
 
   const header = [
-    h("p", { class: "eyebrow" }, "Claude shared"),
+    h("p", { class: "eyebrow" }, "Your agent shared"),
     h("h1", { class: "title" }, info.label),
     info.site ? h("p", { class: "site-line" }, info.site) : null,
-    info.purpose ? h("p", { class: "reason" }, `Claude: ${info.purpose}`) : null,
+    info.purpose ? h("p", { class: "reason" }, `Agent: ${info.purpose}`) : null,
     info.level === "sealed" ? h("p", { class: "badge badge-sealed" }, "Sealed") : null,
   ];
 
@@ -340,7 +340,7 @@ async function shareView(token) {
       } catch (e) {
         ready = prepareUnlock(token);
         ready.catch(() => {});
-        if (e.status === 410) return ended("This share has ended", "Ask Claude to send it again.");
+        if (e.status === 410) return ended("This share has ended", "Ask your agent to send it again.");
         status.replaceChildren(e.stale ? h("p", { class: "muted" }, "Getting ready… tap Unlock again.") : errorBox(`${e.message} Tap Unlock to try again.`));
         return;
       }
@@ -373,7 +373,7 @@ async function shareView(token) {
         keepReady(false);
         unlocked();
       } catch (e) {
-        if (e.status === 410) return ended("This share has ended", "Ask Claude to send it again.");
+        if (e.status === 410) return ended("This share has ended", "Ask your agent to send it again.");
         locked(e.name === "NotAllowedError" ? `${ios ? "Face ID" : "The passkey"} was cancelled. Tap Unlock to try again.` : e.message);
       } finally {
         // Each unlock spends its challenge; have the next one ready.
@@ -462,7 +462,7 @@ async function homeView() {
       { class: "card" },
       h("p", { class: "eyebrow" }, "Paired"),
       h("h1", { class: "title" }, d.name),
-      h("p", { class: "muted lead" }, "When Claude shares a credential with this phone, a notification arrives. Tap it to unlock."),
+      h("p", { class: "muted lead" }, "When your agent shares a credential with this phone, a notification arrives. Tap it to unlock."),
       permission !== "granted" ? errorBox(ios ? "Notifications are off: turn them on in Settings → Notifications → Locked." : "Notifications are off for this site.") : null,
     ),
     shares.length

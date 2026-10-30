@@ -37,7 +37,7 @@ export type FillPageData = {
   site?: string | null;
   level?: Level;
   fields?: Field[];
-  /** Claude's suggested retention; the user can change it. */
+  /** your agent's suggested retention; the user can change it. */
   retention?: Retention;
   /** Request's P-256 public key, raw uncompressed point, base64url. */
   publicKey?: string;
@@ -86,7 +86,7 @@ export type AutofillPayload =
   | { ok: true; origin: string; fields: Array<Field & { value: string }> }
   | { ok: false; error: "origin" | "missing" | "used" | "expired" | "rate" };
 
-/** What the injected snippet returns to Claude. Never includes values. */
+/** What the injected snippet returns to your agent. Never includes values. */
 export type AutofillResult = {
   ok: boolean;
   reason?: "csp" | "hop" | "network" | "origin" | "missing" | "used" | "expired" | "rate" | "no-inputs" | "error";

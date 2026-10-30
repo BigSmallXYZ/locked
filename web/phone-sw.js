@@ -1,5 +1,5 @@
 // Locked's service worker on the paired phone (scope /phone/). It only shows notifications:
-// no fetch handler, no caching of pages. A push carries a share token, the label and Claude's
+// no fetch handler, no caching of pages. A push carries a share token, the label and your agent's
 // purpose, never a secret; the values are fetched and decrypted by the page after Face ID.
 
 const SHARES = "/phone/__shares"; // recent share tokens, so the app can list them when opened directly

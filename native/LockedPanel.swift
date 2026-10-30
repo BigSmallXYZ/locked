@@ -247,7 +247,7 @@ final class Controller {
 
     var sub: [String] = []
     if let site = info.site { sub.append(site) }
-    if let purpose = info.purpose, !purpose.isEmpty { sub.append("Claude: \(purpose)") }
+    if let purpose = info.purpose, !purpose.isEmpty { sub.append("Agent: \(purpose)") }
     if info.level == "sealed" { sub.append("Sealed: Touch ID before the first use") }
     if !sub.isEmpty { stack.addArrangedSubview(label(sub.joined(separator: " · "), size: 11, color: .secondaryLabelColor, wraps: true)) }
 

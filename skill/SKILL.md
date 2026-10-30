@@ -42,7 +42,9 @@ Wherever a command takes `<id>`, a name works too: the label or site of a stored
 `locked panel github` or `locked exec "aws console" -- …`. If several match, it lists them; use
 the `lk_…` id then.
 
-The local server must be running (pm2 apps `locked` and `locked-tunnel`). Check with `locked doctor`; if it's down, `pm2 start locked locked-tunnel`, or `pm2 start ~/Projects/locked/ecosystem.config.cjs` if pm2 doesn't know them yet.
+The server starts by itself when you run a command. `locked doctor` checks each part. If it reports
+no tunnel, links only open on this machine: `locked tunnel use quick`, then `locked restart`. A
+phone needs a stable address, so suggest `ngrok` or the user's own domain (see docs/tunnels.md).
 
 ## Workflow
 

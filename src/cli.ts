@@ -2,12 +2,13 @@ import { existsSync, lstatSync, mkdirSync, readlinkSync, statSync, symlinkSync }
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
-import { AGENT_PORT, agentToken, ensureHome, HOME, paths, PUBLIC_PORT, PUBLIC_URL } from "./config.ts";
-import { api, CliError } from "./client.ts";
+import { AGENT_PORT, agentToken, ensureHome, HOME, LOCAL_URL, paths, PUBLIC_PORT, TUNNEL_NAME } from "./config.ts";
+import { api, CliError, startInBackground, stopServer } from "./client.ts";
 import type { RequestSummary, UseResult, ApprovalSummary } from "./requests.ts";
 import { matchRequest } from "./resolve.ts";
 import type { PanelEvent, PanelSummary } from "./server/panels.ts";
 import type { DeviceSummary, PairingSummary, ShareEvent, ShareSummary } from "./server/phone.ts";
+import type { Provider, TunnelConfig } from "./tunnel.ts";
 
 const EXIT = { ok: 0, failed: 1, pending: 2, needsApproval: 3 } as const;
 const WAIT_DEFAULT_S = 110; // the Bash tool gives up at 120 s
@@ -479,6 +480,10 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
     const usage = "usage: locked phone pair [--name …] | send <id> [--only a,b] [--purpose …] [--timeout 10m] | list | test [<dv_…>] | remove <dv_…>";
     if (sub === "pair") {
       const { values: o } = args(rest, { name: { type: "string" }, "no-wait": { type: "boolean" } });
+      const t = await import("./tunnel.ts");
+      const tunnel = t.loadTunnelConfig();
+      if (tunnel.provider === "none") throw new CliError("a phone needs an https address; set up a tunnel first (locked tunnel use ngrok, or cloudflare for your own domain)");
+      if (t.urlChanges(tunnel)) err("Warning: this tunnel gets a new address on restart, and that unpairs the phone. For a phone, prefer: locked tunnel use ngrok, or cloudflare for your own domain.");
       const r = await api<{ pairing: PairingSummary; code: string; url: string }>("POST", "/api/pairings", { name: o.name });
       if (o.json && o["no-wait"]) return out(JSON.stringify(r));
       out(`Open this on the phone (it works once, for 10 minutes):`);
@@ -627,47 +632,30 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
   },
 
   async serve(argv) {
-    const { values: o } = args(argv, { tunnel: { type: "boolean" } });
+    const { values: o } = args(argv, { "no-tunnel": { type: "boolean" } });
     const { startServers } = await import("./server/index.ts");
-    const { tunnelCommand } = await import("./tunnel.ts");
-    if (o.tunnel && !existsSync(paths.tunnelConfig)) throw new CliError(`no ${paths.tunnelConfig}; run: locked tunnel setup`);
-    const s = await startServers();
+    const t = await import("./tunnel.ts");
+    const config: TunnelConfig = o["no-tunnel"] ? { provider: "none" } : t.loadTunnelConfig();
+    if (config.provider === "cloudflare" && !existsSync(paths.tunnelConfig)) throw new CliError(`no ${paths.tunnelConfig}; run: locked tunnel use cloudflare --hostname <host>`);
+    const s = await startServers({ publicUrl: t.staticUrl(config) ?? LOCAL_URL });
+    s.ctx.clientIpHeader = t.clientIpHeader(config);
     out(`Locked is running.`);
-    out(`  public  http://127.0.0.1:${s.publicServer.port}  →  ${PUBLIC_URL}`);
+    out(`  public  http://127.0.0.1:${s.publicServer.port}`);
     out(`  agent   http://127.0.0.1:${s.agentServer.port}  (localhost only)`);
     out(`  key     ${s.keySource === "keychain" ? "macOS Keychain" : paths.masterKey}`);
-    let tunnel: ReturnType<typeof Bun.spawn> | null = null;
-    let stopping = false;
-    if (o.tunnel) {
-      const startTunnel = () => {
-        tunnel = Bun.spawn(tunnelCommand(), { stdout: "ignore", stderr: "pipe" });
-        (async () => {
-          const reader = (tunnel!.stderr as ReadableStream<Uint8Array>).pipeThrough(new TextDecoderStream() as unknown as ReadableWritablePair<string, Uint8Array>).getReader();
-          let buf = "";
-          for (;;) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buf += value;
-            let i;
-            while ((i = buf.indexOf("\n")) !== -1) {
-              const line = buf.slice(0, i);
-              buf = buf.slice(i + 1);
-              if (/Registered tunnel connection|ERR|error/i.test(line)) err(`[tunnel] ${line.replace(/^\S+\s+/, "")}`);
-            }
-          }
-        })();
-        tunnel.exited.then((code) => {
-          if (stopping) return;
-          err(`[tunnel] cloudflared exited (${code}); restarting in 5 s`);
-          setTimeout(startTunnel, 5_000);
-        });
-      };
-      startTunnel();
-      out(`  tunnel  cloudflared → ${PUBLIC_URL}`);
-    }
+    out(`  url     ${t.staticUrl(config) ?? `waiting for ${config.provider}…`}`);
+    if (config.provider === "none") out(`  note    no tunnel: links only open on this machine. Add one with: locked tunnel use quick`);
+    const tunnel = t.startTunnel(config, {
+      onUrl(url) {
+        if (url === s.ctx.publicUrl) return;
+        s.ctx.publicUrl = url;
+        out(`  url     ${url}`);
+        if (t.urlChanges(config)) out(`  note    this address changes when the tunnel restarts; earlier links stop working`);
+      },
+      onLine: (text) => err(`[tunnel] ${text}`),
+    });
     const stop = () => {
-      stopping = true;
-      tunnel?.kill();
+      tunnel.stop();
       s.stop();
       process.exit(0);
     };
@@ -676,8 +664,9 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
     await new Promise(() => {});
   },
 
+  /** Everything at once: safe to run again, and an agent can run it for you. */
   async setup(argv) {
-    const { values: o } = args(argv, { tunnel: { type: "boolean" } });
+    const { values: o } = args(argv, { tunnel: { type: "string" }, "no-start": { type: "boolean" }, "no-install": { type: "boolean" }, ...TUNNEL_OPTIONS });
     ensureHome();
     agentToken();
     const { openContext } = await import("./server/index.ts");
@@ -686,34 +675,55 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
     out(`~/.locked ready (${HOME})`);
     out(`  master key  ${keySource === "keychain" ? "macOS Keychain (service \"locked\")" : paths.masterKey}${keyCreated ? " (new)" : ""}`);
     out(`  agent token ${paths.agentToken}`);
-    if (o.tunnel) return commands.tunnel!(["setup"]);
+
+    const t = await import("./tunnel.ts");
+    if (o.tunnel) await useTunnel(o.tunnel as string, undefined, o);
+    else if (existsSync(paths.tunnel)) out(`  tunnel      ${describeTunnel(t.loadTunnelConfig())}`);
+    else {
+      if (!t.detectProvider() && !o["no-install"] && Bun.which("brew")) {
+        out(`No tunnel found; installing cloudflared with Homebrew…`);
+        Bun.spawnSync(["brew", "install", "cloudflared"], { stdout: "inherit", stderr: "inherit" });
+      }
+      const provider = t.detectProvider();
+      if (provider) await useTunnel(provider, undefined, o);
+      else out(`  tunnel      none, so links only open on this machine. Install cloudflared, then: locked tunnel use quick`);
+    }
+
+    for (const line of installSkills(detectedAgents())) out(`  ${line}`);
+
+    if (o["no-start"]) return out(`Start it with: locked serve`);
+    const publicUrl = await restartServer();
+    out(`Locked is running at ${publicUrl}. Your agent can now use it; check everything with: locked doctor`);
+    if (t.urlChanges(t.loadTunnelConfig())) out(`This address changes when the tunnel restarts. For a phone or a lasting address, see docs/tunnels.md.`);
+  },
+
+  async restart() {
+    out(`Locked is running at ${await restartServer()}.`);
+  },
+
+  async stop() {
+    out((await stopServer()) ? "Locked stopped. It starts again the next time the CLI needs it." : "Locked wasn't running.");
   },
 
   async tunnel(argv) {
-    const [sub = "status"] = argv;
-    const t = await import("./tunnel.ts");
-    if (sub === "setup") {
-      const r = t.setupTunnel((line) => out(line));
-      out(`Tunnel "${process.env.LOCKED_TUNNEL ?? "locked"}" ${r.created ? "created" : "already existed"} (${r.id}).`);
-      out(`  dns     ${r.dns}`);
-      out(`  config  ${r.configPath}`);
-      out(`Start everything with: pm2 start ecosystem.config.cjs (or, in the foreground: locked serve --tunnel)`);
-      return;
-    }
-    if (sub === "run") {
-      if (!existsSync(paths.tunnelConfig)) throw new CliError(`no ${paths.tunnelConfig}; run: locked tunnel setup`);
-      const p = Bun.spawn(t.tunnelCommand(), { stdout: "inherit", stderr: "inherit" });
-      return p.exited;
+    const [sub = "status", ...rest] = argv;
+    if (sub === "use") {
+      const { values: o, positionals: [provider, target] } = args(rest, TUNNEL_OPTIONS);
+      if (!provider) throw new CliError(TUNNEL_USAGE);
+      return useTunnel(provider, target, o);
     }
     if (sub === "status") {
-      const found = t.cloudflaredPath() ? t.findTunnel() : null;
+      const t = await import("./tunnel.ts");
+      const config = t.loadTunnelConfig();
+      out(`tunnel       ${describeTunnel(config)}`);
       out(`cloudflared  ${t.cloudflaredPath() ?? "not installed"}`);
-      out(`tunnel       ${found ? `${found.name} (${found.id})` : "not created (locked tunnel setup)"}`);
-      out(`config       ${existsSync(paths.tunnelConfig) ? paths.tunnelConfig : "missing"}`);
-      out(`hostname     ${t.TUNNEL_HOST}`);
+      out(`ngrok        ${t.ngrokPath() ?? "not installed"}`);
+      out(`tunnelmole   ${t.tunnelmolePath() ?? "not installed"}`);
+      const health = await api<{ publicUrl: string }>("GET", "/api/health", undefined, { autostart: false }).catch(() => null);
+      out(`public URL   ${health?.publicUrl ?? "Locked isn't running"}`);
       return;
     }
-    throw new CliError("usage: locked tunnel setup|run|status");
+    throw new CliError(TUNNEL_USAGE);
   },
 
   async doctor() {
@@ -724,19 +734,26 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
     };
     check(existsSync(HOME) && (statSync(HOME).mode & 0o077) === 0, "home", `${HOME}${existsSync(HOME) ? "" : " (missing: locked setup)"}`);
     check(existsSync(paths.agentToken) && (statSync(paths.agentToken).mode & 0o077) === 0, "agent token", paths.agentToken);
-    const health = await api("GET", "/api/health").catch((e) => e as CliError);
+    const health = await api("GET", "/api/health", undefined, { autostart: false }).catch((e) => e as CliError);
     check(!(health instanceof CliError), "agent API", health instanceof CliError ? health.message : `127.0.0.1:${AGENT_PORT}, key in ${health.keySource}`);
     const local = await fetch(`http://127.0.0.1:${PUBLIC_PORT}/healthz`).then((r) => r.ok).catch(() => false);
     check(local, "public server", `127.0.0.1:${PUBLIC_PORT}`);
     const exposed = await fetch(`http://127.0.0.1:${PUBLIC_PORT}/api/health`).then((r) => r.status).catch(() => 0);
     check(exposed === 404 || exposed === 0, "api not public", exposed === 404 || exposed === 0 ? "the public listener has no /api" : `public listener answered /api with ${exposed}!`);
     const t = await import("./tunnel.ts");
-    check(!!t.cloudflaredPath(), "cloudflared", t.cloudflaredPath() ?? "not installed (brew install cloudflared)");
-    check(existsSync(paths.tunnelConfig), "tunnel config", existsSync(paths.tunnelConfig) ? paths.tunnelConfig : "missing (locked tunnel setup)");
-    const remote = await fetch(`${PUBLIC_URL}/healthz`, { signal: AbortSignal.timeout(8_000) }).then((r) => r.ok).catch(() => false);
-    check(remote, "public URL", `${PUBLIC_URL}/healthz ${remote ? "reachable" : "unreachable (is the tunnel running? pm2 status locked-tunnel)"}`);
-    const remoteApi = await fetch(`${PUBLIC_URL}/api/health`, { signal: AbortSignal.timeout(8_000) }).then((r) => r.status).catch(() => 0);
-    if (remote) check(remoteApi === 404, "api via tunnel", remoteApi === 404 ? "not exposed (404)" : `answered ${remoteApi}!`);
+    const tunnel = t.loadTunnelConfig();
+    out(`– ${"tunnel".padEnd(14)} ${describeTunnel(tunnel)}`);
+    if (tunnel.provider === "quick" || tunnel.provider === "cloudflare") check(!!t.cloudflaredPath(), "cloudflared", t.cloudflaredPath() ?? "not installed (brew install cloudflared)");
+    if (tunnel.provider === "ngrok") check(!!t.ngrokPath(), "ngrok", t.ngrokPath() ?? "not installed (brew install ngrok)");
+    if (tunnel.provider === "tunnelmole") check(!!t.tunnelmolePath(), "tunnelmole", t.tunnelmolePath() ?? "not installed (npm install -g tunnelmole)");
+    if (tunnel.provider === "cloudflare") check(existsSync(paths.tunnelConfig), "tunnel config", existsSync(paths.tunnelConfig) ? paths.tunnelConfig : `missing (locked tunnel use cloudflare --hostname ${tunnel.host})`);
+    const publicUrl = health instanceof CliError ? t.staticUrl(tunnel) : (health.publicUrl as string);
+    if (tunnel.provider !== "none" && publicUrl) {
+      const remote = await fetch(`${publicUrl}/healthz`, { signal: AbortSignal.timeout(8_000) }).then((r) => r.ok).catch(() => false);
+      check(remote, "public URL", `${publicUrl}/healthz ${remote ? "reachable" : "unreachable (is the tunnel running? a new one can take a few seconds)"}`);
+      const remoteApi = await fetch(`${publicUrl}/api/health`, { signal: AbortSignal.timeout(8_000) }).then((r) => r.status).catch(() => 0);
+      if (remote) check(remoteApi === 404, "api via tunnel", remoteApi === 404 ? "not exposed (404)" : `answered ${remoteApi}!`);
+    }
     if (process.platform === "darwin") {
       const { APP, panelAppState } = await import("./native.ts");
       const state = panelAppState();
@@ -744,27 +761,92 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
       if (state === "ready") check(true, "native panel", APP);
       else out(`– ${"native panel".padEnd(14)} ${state === "missing" ? "not built yet" : "out of date"}; Locked builds it on start and before a panel (needs the Xcode Command Line Tools)`);
     }
-    const skill = skillTarget();
-    check(existsSync(join(skill, "SKILL.md")), "claude skill", existsSync(skill) ? skill : "not installed (locked install-skill)");
+    const skills = Object.values(SKILL_DIRS).map((dir) => join(dir(), "locked")).filter((p) => existsSync(join(p, "SKILL.md")));
+    check(skills.length > 0, "agent skill", skills.join(", ") || "not installed (locked install-skill)");
     return bad ? EXIT.failed : EXIT.ok;
   },
 
-  async "install-skill"() {
-    const source = join(import.meta.dir, "..", "skill");
-    const target = skillTarget();
-    mkdirSync(dirname(target), { recursive: true });
-    if (existsSync(target) || lstatExists(target)) {
-      if (lstatSync(target).isSymbolicLink() && readlinkSync(target) === source) return out(`Already installed: ${target} → ${source}`);
-      throw new CliError(`${target} already exists and isn't Locked's symlink; move it away first`);
-    }
-    symlinkSync(source, target);
-    out(`Installed: ${target} → ${source}`);
+  async "install-skill"(argv) {
+    const { values: o } = args(argv, { agent: { type: "string" }, dir: { type: "string" } });
+    if (o.dir) return void installSkills([o.dir as string]).forEach((line) => out(line));
+    const agent = o.agent as string | undefined;
+    if (agent && !(agent in AGENTS) && agent !== "all") throw new CliError(`usage: locked install-skill [--agent ${Object.keys(AGENTS).join("|")}|all] [--dir <skills folder>]`);
+    const dirs = agent === "all" ? Object.values(SKILL_DIRS).map((d) => d()) : agent ? [SKILL_DIRS[AGENTS[agent]!]!()] : detectedAgents();
+    for (const line of installSkills(dirs)) out(line);
+  },
+
+  /** The skill as text, for agents with their own instruction files. */
+  async skill() {
+    out(await Bun.file(SKILL_SOURCE).text());
   },
 
   async help() {
     out(HELP);
   },
 };
+
+const TUNNEL_OPTIONS: Options = {
+  hostname: { type: "string" },
+  domain: { type: "string" },
+  url: { type: "string" },
+  "client-ip-header": { type: "string" },
+};
+const TUNNEL_USAGE = "usage: locked tunnel [status] | use quick | use ngrok [--domain <reserved>] | use tunnelmole [--domain <reserved>] | use cloudflare --hostname <host> | use url <https://…> [--client-ip-header <header>] | use none";
+
+function describeTunnel(c: TunnelConfig) {
+  switch (c.provider) {
+    case "quick":
+      return "quick (cloudflared, no account; a new address on each restart)";
+    case "ngrok":
+      return `ngrok${c.host ? ` (${c.host})` : ""}`;
+    case "tunnelmole":
+      return `tunnelmole${c.host ? ` (${c.host})` : " (a new address on each restart)"}`;
+    case "cloudflare":
+      return `cloudflare (${c.host})`;
+    case "url":
+      return `your own (${c.url})`;
+    case "none":
+      return "none (links only open on this machine)";
+  }
+}
+
+async function useTunnel(provider: string, target: string | undefined, o: Record<string, any>) {
+  const t = await import("./tunnel.ts");
+  if (!t.PROVIDERS.includes(provider as Provider)) throw new CliError(TUNNEL_USAGE);
+  let config: TunnelConfig = { provider: provider as Provider };
+  if (provider === "quick" && !t.cloudflaredPath()) throw new CliError("cloudflared isn't installed (brew install cloudflared)");
+  if (provider === "ngrok") {
+    if (!t.ngrokPath()) throw new CliError("ngrok isn't installed (brew install ngrok, then ngrok config add-authtoken <token>)");
+    if (o.domain) config.host = (o.domain as string).replace(/^https:\/\//, "").replace(/\/$/, "");
+  }
+  if (provider === "tunnelmole") {
+    if (!t.tunnelmolePath()) throw new CliError("tunnelmole isn't installed (npm install -g tunnelmole)");
+    if (o.domain) config.host = (o.domain as string).replace(/^https:\/\//, "").replace(/\/$/, "");
+  }
+  if (provider === "cloudflare") {
+    if (!o.hostname) throw new CliError("cloudflare needs a hostname on a zone you own: locked tunnel use cloudflare --hostname locked.example.com");
+    config.host = o.hostname as string;
+    const r = t.setupNamedTunnel(config.host, out);
+    out(`Tunnel "${TUNNEL_NAME}" ${r.created ? "created" : "already existed"} (${r.id}).`);
+    out(`  dns     ${r.dns}`);
+    out(`  config  ${r.configPath}`);
+  }
+  if (provider === "url") {
+    const url = target ?? (o.url as string | undefined);
+    if (!url || !/^https:\/\/[^/]+\/?$/.test(url)) throw new CliError("url needs the https address of your tunnel, with no path: locked tunnel use url https://locked.example.com");
+    config = { provider: "url", url, ...(o["client-ip-header"] ? { clientIpHeader: o["client-ip-header"] as string } : {}) };
+  }
+  t.saveTunnelConfig(config);
+  out(`Tunnel: ${describeTunnel(config)}.`);
+  if (provider === "url") out(`Point it at http://127.0.0.1:${PUBLIC_PORT}, and only that port.`);
+  out(`To apply it now: locked restart`);
+}
+
+async function restartServer() {
+  if (await stopServer()) await Bun.sleep(2_500); // if pm2 is in charge, it brings the server back itself
+  const running = await api<{ publicUrl: string }>("GET", "/api/health", undefined, { autostart: false }).catch(() => null);
+  return (running ?? (await startInBackground())).publicUrl;
+}
 
 function lstatExists(p: string) {
   try {
@@ -775,12 +857,39 @@ function lstatExists(p: string) {
   }
 }
 
-/** Where Claude Code looks for user skills: $CLAUDE_CONFIG_DIR/skills, else ~/.claude/skills. */
-function skillTarget() {
-  return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "skills", "locked");
+const SKILL_SOURCE = join(import.meta.dir, "..", "skill", "SKILL.md");
+
+// User-level skill folders. ~/.agents/skills is the open Agent Skills location Codex reads.
+const SKILL_DIRS: Record<string, () => string> = {
+  claude: () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "skills"),
+  agents: () => join(homedir(), ".agents", "skills"),
+};
+const AGENTS: Record<string, string> = { claude: "claude", codex: "agents", agents: "agents" };
+
+/** Skill folders for the agents on this machine; the shared one if none is recognized. */
+function detectedAgents(): string[] {
+  const found: string[] = [];
+  if (existsSync(dirname(SKILL_DIRS.claude!())) || Bun.which("claude")) found.push(SKILL_DIRS.claude!());
+  if (existsSync(join(homedir(), ".agents")) || existsSync(join(homedir(), ".codex")) || Bun.which("codex")) found.push(SKILL_DIRS.agents!());
+  return found.length ? found : [SKILL_DIRS.agents!()];
 }
 
-const HELP = `locked: hand secrets to Claude through a link instead of the chat.
+/** Links the skill into each folder. Anything already there that isn't ours is left alone. */
+function installSkills(dirs: string[]): string[] {
+  const source = dirname(SKILL_SOURCE);
+  return dirs.map((dir) => {
+    const target = join(dir, "locked");
+    mkdirSync(dir, { recursive: true });
+    if (lstatExists(target)) {
+      if (lstatSync(target).isSymbolicLink() && readlinkSync(target) === source) return `skill       ${target} (already installed)`;
+      return `skill       skipped ${target}: something else is there`;
+    }
+    symlinkSync(source, target);
+    return `skill       ${target}`;
+  });
+}
+
+const HELP = `locked: hand secrets to your AI agent through a link instead of the chat.
 
 Ask
   locked request --label "GitHub login" --site github.com --login [--reason …]
@@ -804,8 +913,10 @@ Phone
   locked phone list · locked phone test [<dv_…>] · locked phone remove <dv_…>
 
 Run
-  locked setup [--tunnel] · locked serve [--tunnel] · locked tunnel setup|run|status
-  locked doctor · locked install-skill
+  locked setup [--tunnel <provider>] [--no-start] [--no-install]   tunnel, agent skills and server, all at once
+  locked restart · locked stop · locked serve [--no-tunnel]        the CLI starts the server by itself when it's needed
+  locked tunnel [status] · locked tunnel use quick | ngrok [--domain …] | tunnelmole [--domain …] | cloudflare --hostname … | url <https://…> | none
+  locked doctor · locked install-skill [--agent claude|codex|all] [--dir <folder>] · locked skill
 
 Field types: username email password new-password otp apikey text textarea url number
 `;

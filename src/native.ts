@@ -34,7 +34,7 @@ const INFO_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
-  <key>NSHumanReadableCopyright</key><string>Types or copies the secrets you gave Claude through Locked.</string>
+  <key>NSHumanReadableCopyright</key><string>Types or copies the secrets you gave your agent through Locked.</string>
 </dict>
 </plist>
 `;

@@ -28,7 +28,15 @@ import {
 } from "./model.ts";
 import { notify } from "./server/waiters.ts";
 
-export type Ctx = { db: Database; key: CryptoKey; publicUrl: string; now?: () => number };
+export type Ctx = {
+  db: Database;
+  key: CryptoKey;
+  /** Changes while running when the tunnel assigns a new address. */
+  publicUrl: string;
+  /** Header the tunnel sets to the real client address, if it's one a client can't forge. */
+  clientIpHeader?: string;
+  now?: () => number;
+};
 
 export class LockedError extends Error {
   constructor(

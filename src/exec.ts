@@ -4,7 +4,7 @@
 // encodings (URL-encoded, base64, base64url, JSON-escaped). Any program that
 // transforms the value before printing it (hashes it, reverses it, hex-encodes it,
 // base64-encodes it together with other bytes, prints it one character per second)
-// defeats it. It stops accidental leaks into Claude's transcript; it is not a sandbox.
+// defeats it. It stops accidental leaks into your agent's transcript; it is not a sandbox.
 // Secrets go into the child's environment only, never into argv.
 
 export type Secret = { name: string; value: string };

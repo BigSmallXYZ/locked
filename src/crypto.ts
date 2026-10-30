@@ -188,6 +188,7 @@ export async function loadMasterKey(opts: {
     throw new Error(
       "Locked's master key is missing but the database already holds encrypted data. " +
         "Refusing to create a new key, because that would make every stored secret unreadable. " +
+        "If the key is still there, this process can't reach the Keychain (a daemon can lose access to it; restart the daemon from a normal terminal). " +
         "Restore the key (Keychain item 'locked' or ~/.locked/master.key) or delete ~/.locked/locked.db to start over.",
     );
   }

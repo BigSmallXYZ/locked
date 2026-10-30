@@ -2,7 +2,7 @@
   "id": "/phone/",
   "name": "Locked",
   "short_name": "Locked",
-  "description": "Credentials Claude shares with this phone.",
+  "description": "Credentials your agent shares with this phone.",
   "start_url": "/phone/",
   "scope": "/phone/",
   "display": "standalone",

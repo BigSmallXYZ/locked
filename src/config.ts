@@ -8,8 +8,10 @@ const env = process.env;
 export const HOME = env.LOCKED_HOME ?? join(homedir(), ".locked");
 export const PUBLIC_PORT = Number(env.LOCKED_PUBLIC_PORT ?? 7410);
 export const AGENT_PORT = Number(env.LOCKED_AGENT_PORT ?? 7411);
-/** Where people open fill links. The tunnel points this host at PUBLIC_PORT. */
-export const PUBLIC_URL = (env.LOCKED_PUBLIC_URL ?? "https://locked.flypack.app").replace(/\/$/, "");
+export const LOCAL_URL = `http://127.0.0.1:${PUBLIC_PORT}`;
+/** Where people open fill links when you set it yourself; otherwise it comes from the tunnel. */
+export const PUBLIC_URL_OVERRIDE = env.LOCKED_PUBLIC_URL?.replace(/\/$/, "") || undefined;
+export const PUBLIC_URL = PUBLIC_URL_OVERRIDE ?? LOCAL_URL;
 export const AGENT_URL = `http://127.0.0.1:${AGENT_PORT}`;
 /** "keychain" (macOS default) or "file". Tests and Linux use "file". */
 export const KEYSTORE = env.LOCKED_KEYSTORE ?? (process.platform === "darwin" ? "keychain" : "file");
@@ -19,6 +21,7 @@ export const paths = {
   db: join(HOME, "locked.db"),
   agentToken: join(HOME, "agent.token"),
   masterKey: join(HOME, "master.key"),
+  tunnel: join(HOME, "tunnel.json"),
   tunnelConfig: join(homedir(), ".cloudflared", `${TUNNEL_NAME}.yml`),
 };
 

@@ -74,4 +74,4 @@ async function hop() {
   location.replace(back.href);
 }
 
-hop().catch(() => show("Something went wrong", "Go back to the page and ask Claude to try again."));
+hop().catch(() => show("Something went wrong", "Go back to the page and ask your agent to try again."));

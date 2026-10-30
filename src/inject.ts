@@ -12,7 +12,7 @@ const END = "// @locked:fill-end";
 const ARGS = "__LOCKED_FILL_ARGS__";
 
 export type SnippetArgs = {
-  /** Locked's public base URL, e.g. https://locked.flypack.app */
+  /** Locked's public base URL, e.g. https://locked.example.com */
   base: string;
   /** One-time autofill token for GET {base}/u/{token}. */
   token: string;

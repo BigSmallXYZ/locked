@@ -3,7 +3,7 @@
 // passkey public key, in the DB). `locked phone send` then pushes a notification to it. Tapping it
 // opens the share page, and a user-verified passkey assertion (Face ID, fingerprint) releases the
 // values, sealed to a key the page made for that unlock, so the tunnel and Cloudflare only ever
-// carry ciphertext. The push itself holds no secret: a share token, the label and Claude's purpose.
+// carry ciphertext. The push itself holds no secret: a share token, the label and your agent's purpose.
 // Pairings and shares live in memory, like panels; a restart ends them.
 
 import { b64u, hashToken, openJson, PHONE_INFO, randomId, randomToken, sealFillEnvelope, sealJson } from "../crypto.ts";
@@ -117,7 +117,7 @@ async function pushTo(ctx: Ctx, pusher: Pusher, devices: DeviceRow[], payload: P
 export async function testPush(ctx: Ctx, pusher: Pusher, deviceId?: string) {
   const devices = activeDevices(ctx).filter((d) => !deviceId || d.id === deviceId);
   if (devices.length === 0) throw new LockedError("no_phone", deviceId ? `no paired phone ${deviceId}` : "No phone is paired yet. Run `locked phone pair`.", 409);
-  return pushTo(ctx, pusher, devices, { t: "info", title: "Locked test", body: "This is how Claude's credential banners will arrive." }, 300);
+  return pushTo(ctx, pusher, devices, { t: "info", title: "Locked test", body: "This is how your agent's credential banners will arrive." }, 300);
 }
 
 // --- pairing ---
@@ -255,7 +255,7 @@ export async function pairFinish(
   p.endedAt = t;
   recordEvent(ctx, null, "phone_paired", { pairingId: p.id, deviceId: id, name, backedUp: reg.backedUp });
 
-  const [welcome] = await pushTo(ctx, pusher, [activeDevices(ctx).find((d) => d.id === id)!], { t: "info", title: "Locked is paired", body: "Credentials Claude shares with this phone will arrive like this." }, 300);
+  const [welcome] = await pushTo(ctx, pusher, [activeDevices(ctx).find((d) => d.id === id)!], { t: "info", title: "Locked is paired", body: "Credentials your agent shares with this phone will arrive like this." }, 300);
   p.pushOk = !!welcome?.ok;
   // Anyone else's phones hear about it, in case the code leaked.
   if (others.length) await pushTo(ctx, pusher, others, { t: "info", title: "New phone paired with Locked", body: `“${name}”. Not you? On the Mac: locked phone remove ${id}` }, 3600);
@@ -369,7 +369,7 @@ export async function sendShare(ctx: Ctx, pusher: Pusher, requestId: string, opt
     t: "share",
     s: token,
     title: request.label,
-    body: `${purpose ? `Claude: ${purpose}. ` : ""}Tap to unlock the ${what}.`,
+    body: `${purpose ? `Agent: ${purpose}. ` : ""}Tap to unlock the ${what}.`,
     exp: s.expiresAt,
   };
   const results = await pushTo(ctx, pusher, devices, payload, timeoutSec);
@@ -393,7 +393,7 @@ function byToken(ctx: Ctx, token: string): Share {
   sweepPhone(ctx);
   const id = sharesByToken.get(hashToken(token));
   const s = id ? shares.get(id) : undefined;
-  if (!s) throw new LockedError("expired", "This share has ended. Ask Claude to send it again.", 410);
+  if (!s) throw new LockedError("expired", "This share has ended. Ask your agent to send it again.", 410);
   return s;
 }
 
@@ -442,7 +442,7 @@ export function shareChallenge(ctx: Ctx, token: string) {
 /** Public: a fresh user-verified passkey assertion from a paired phone releases the values, sealed to `epk`. */
 export async function shareUnlock(ctx: Ctx, token: string, input: { assertion?: AssertionInput; epk?: string }) {
   const s = byToken(ctx, token);
-  if (s.unlocks >= MAX_UNLOCKS) throw new LockedError("rate", "This share has been unlocked too many times. Ask Claude to send it again.", 429);
+  if (s.unlocks >= MAX_UNLOCKS) throw new LockedError("rate", "This share has been unlocked too many times. Ask your agent to send it again.", 429);
   const assertion = input.assertion ?? ({} as AssertionInput);
   let challenge = "";
   try {

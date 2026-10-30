@@ -85,6 +85,14 @@ export function agentHandler(ctx: Ctx, token: string, info: AgentInfo, port: () 
 
       if (kind === "health" && m === "GET") return json({ ok: true, ...info });
 
+      if (kind === "shutdown" && m === "POST") {
+
+        setTimeout(() => process.kill(process.pid, "SIGTERM"), 50); // after this response
+
+        return json({ ok: true });
+
+      }
+
       if (kind === "requests") {
         if (!id && m === "POST") return json({ ok: true, ...(await createRequest(ctx, await body<CreateInput>(req))) });
         if (!id && m === "GET") {
