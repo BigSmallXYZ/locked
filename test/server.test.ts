@@ -13,7 +13,7 @@ const auth = { Authorization: `Bearer ${token}` };
 
 beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), "locked-srv-"));
-  s = await startServers({ publicPort: 0, agentPort: 0, dbPath: join(dir, "t.db"), keyPath: join(dir, "k"), keystore: "file", token });
+  s = await startServers({ publicPort: 0, agentPort: 0, dbPath: join(dir, "t.db"), keyPath: join(dir, "k"), keystore: "file", token, native: null });
   pub = `http://127.0.0.1:${s.publicServer.port}`;
   agent = `http://127.0.0.1:${s.agentServer.port}`;
 });
