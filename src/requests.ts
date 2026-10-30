@@ -347,24 +347,57 @@ export function getRequest(ctx: Ctx, id: string): RequestSummary {
   return summarize(ctx, rowById(ctx, id));
 }
 
-export function listRequests(ctx: Ctx, limit = 50): RequestSummary[] {
-  const rows = ctx.db.query("SELECT * FROM requests ORDER BY created_at DESC LIMIT ?").all(limit) as RequestRow[];
-  return rows.map((r) => summarize(ctx, r));
+/** `stored`: only secrets that are filled and still kept, i.e. the ones you can use. */
+export function listRequests(ctx: Ctx, limit = 50, opts: { stored?: boolean } = {}): RequestSummary[] {
+  const where = opts.stored ? "WHERE status = 'filled' AND secret IS NOT NULL" : "";
+  const rows = ctx.db.query(`SELECT * FROM requests ${where} ORDER BY created_at DESC LIMIT ?`).all(limit) as RequestRow[];
+  const all = rows.map((r) => summarize(ctx, r));
+  return opts.stored ? all.filter((r) => r.status === "filled") : all;
 }
 
 // ---------------------------------------------------------------------------
 // Using secrets
 
-/** Plaintext for `locked get`. Refused for sealed requests. */
-export async function reveal(ctx: Ctx, id: string, only?: string[]) {
+/**
+ * Plaintext for `locked get`. Sealed requests only after the owner confirmed on the Mac itself
+ * (Touch ID, checked by the server, not the caller): `deviceConfirmed` is set by the agent API.
+ */
+export async function reveal(ctx: Ctx, id: string, only?: string[], opts: { deviceConfirmed?: boolean; dryRun?: boolean } = {}) {
   const row = rowById(ctx, id);
-  if (row.level === "sealed") {
-    throw new LockedError("sealed", `${id} is sealed: it can't be printed. Use inject, exec or copy (each use asks the user).`, 403);
+  if (row.level === "sealed" && !opts.deviceConfirmed) {
+    throw new LockedError("sealed", `${id} is sealed: it can't be printed without Touch ID on the Mac. Use inject, exec, copy or panel.`, 403);
   }
   const fields = pickFields(row, only);
-  const values = subset(await loadValues(ctx, row), fields);
+  const loaded = await loadValues(ctx, row);
+  if (opts.dryRun) return { values: {}, fields: [] };
+  const values = subset(loaded, fields);
   markUsed(ctx, row, "get");
+  if (opts.deviceConfirmed) audit(ctx, row.id, "device_confirmed", { via: "get" });
   return { values, fields: Object.keys(values) };
+}
+
+/** What the native panel shows before any value leaves the database. */
+/** What a panel or phone share will show: throws unless the secret is filled and unexpired. */
+export async function releaseTarget(ctx: Ctx, id: string, only?: string[]) {
+  const row = rowById(ctx, id);
+  await loadValues(ctx, row); // throws unless filled and unexpired
+  return { request: summarize(ctx, row), fields: pickFields(row, only) };
+}
+
+/** The panel's values, on its first Type or Copy. For a sealed request the caller has already run Touch ID. */
+/** Values for the Mac panel or the phone. Sealed ones need the device's own check (Touch ID, Face ID) first. */
+export async function releaseValues(ctx: Ctx, id: string, fields: string[], opts: { via: "panel" | "phone"; deviceConfirmed?: boolean }) {
+  const row = rowById(ctx, id);
+  if (row.level === "sealed" && !opts.deviceConfirmed) throw new LockedError("sealed", `${id} is sealed: Touch ID first`, 403);
+  const values = subset(await loadValues(ctx, row), pickFields(row, fields));
+  markUsed(ctx, row, opts.via);
+  if (opts.deviceConfirmed) audit(ctx, row.id, "device_confirmed", { via: opts.via });
+  return values;
+}
+
+/** Audit entries for things that happen outside this module (panel clicks). Names and field names only. */
+export function recordEvent(ctx: Ctx, requestId: string | null, event: string, detail?: Record<string, unknown>) {
+  audit(ctx, requestId, event, detail);
 }
 
 export type UseInput = { via: Exclude<Via, "get">; purpose?: string; origin?: string; only?: string[] };

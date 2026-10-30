@@ -63,6 +63,24 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX audit_request ON audit (request_id);
   `,
+  `
+  CREATE TABLE devices (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    credential_id TEXT NOT NULL UNIQUE,
+    public_key    TEXT NOT NULL,
+    sign_count    INTEGER NOT NULL DEFAULT 0,
+    push          BLOB,
+    user_agent    TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL,
+    last_seen_at  INTEGER,
+    revoked_at    INTEGER
+  );
+  CREATE TABLE settings (
+    key   TEXT PRIMARY KEY,
+    value BLOB NOT NULL
+  );
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -85,7 +103,11 @@ export function openDb(path: string): Database {
 /** True when the DB holds anything a lost master key would make unreadable. */
 export function hasEncryptedData(db: Database): boolean {
   const row = db
-    .query("SELECT COUNT(*) AS n FROM requests WHERE secret IS NOT NULL OR fill_private_key IS NOT NULL")
+    .query(
+      `SELECT (SELECT COUNT(*) FROM requests WHERE secret IS NOT NULL OR fill_private_key IS NOT NULL)
+            + (SELECT COUNT(*) FROM devices WHERE push IS NOT NULL)
+            + (SELECT COUNT(*) FROM settings) AS n`,
+    )
     .get() as { n: number };
   return row.n > 0;
 }
@@ -121,6 +143,19 @@ export type UseTokenRow = {
   created_at: number;
   expires_at: number;
   used_at: number | null;
+};
+
+export type DeviceRow = {
+  id: string;
+  name: string;
+  credential_id: string;
+  public_key: string;
+  sign_count: number;
+  push: Uint8Array | null;
+  user_agent: string;
+  created_at: number;
+  last_seen_at: number | null;
+  revoked_at: number | null;
 };
 
 export type ApprovalRow = {

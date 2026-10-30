@@ -5,6 +5,9 @@ import { parseArgs } from "node:util";
 import { AGENT_PORT, agentToken, ensureHome, HOME, paths, PUBLIC_PORT, PUBLIC_URL } from "./config.ts";
 import { api, CliError } from "./client.ts";
 import type { RequestSummary, UseResult, ApprovalSummary } from "./requests.ts";
+import { matchRequest } from "./resolve.ts";
+import type { PanelEvent, PanelSummary } from "./server/panels.ts";
+import type { DeviceSummary, PairingSummary, ShareEvent, ShareSummary } from "./server/phone.ts";
 
 const EXIT = { ok: 0, failed: 1, pending: 2, needsApproval: 3 } as const;
 const WAIT_DEFAULT_S = 110; // the Bash tool gives up at 120 s
@@ -92,14 +95,134 @@ async function waitApproval(id: string, timeoutS: number): Promise<ApprovalSumma
   return r.approval;
 }
 
+const usedEvent = (e: PanelEvent) => e.event === "typed" || e.event === "copied";
+
+/** Follows a panel's clicks until every field was typed or copied, it closes, or the time runs out. */
+async function followPanel(id: string, timeoutS: number, onEvent: (e: PanelEvent) => void): Promise<PanelSummary> {
+  const deadline = Date.now() + Math.min(timeoutS, WAIT_MAX_S) * 1000;
+  let seen = 0;
+  for (;;) {
+    const left = Math.max(0, Math.min(25, Math.floor((deadline - Date.now()) / 1000)));
+    const { panel: p } = await api<{ panel: PanelSummary }>("GET", `/api/panels/${id}/wait?timeout=${left}&after=${seen}`);
+    for (const e of p.events.slice(seen)) onEvent(e);
+    seen = p.events.length;
+    const allUsed = p.fields.every((f) => p.events.some((e) => e.field === f && usedEvent(e)));
+    if (p.status === "closed" || p.status === "failed" || allUsed || Date.now() >= deadline - 500) return p;
+  }
+}
+
+function printPanelEvent(e: PanelEvent) {
+  if (e.event === "needs_accessibility") {
+    out("The user clicked Type, but Locked isn't allowed to type yet: they need to turn on Locked in System Settings → Privacy & Security → Accessibility (macOS just asked them). Copy works meanwhile.");
+  } else if (usedEvent(e)) out(`The user ${e.event} ${e.field}.`);
+}
+
+function describePanel(p: PanelSummary): { line: string; code: number } {
+  const used = [...new Set(p.events.filter(usedEvent).map((e) => `${e.event} ${e.field}`))];
+  const allUsed = p.fields.every((f) => p.events.some((e) => e.field === f && usedEvent(e)));
+  if (p.status === "failed") return { line: `${p.id} failed: ${p.error ?? "unknown error"}`, code: EXIT.failed };
+  if (used.length && (allUsed || p.status === "closed")) {
+    return { line: `${p.id}: the user ${used.join(", ")}. ${p.status === "closed" ? "The panel is closed." : "The panel closes on its own."}`, code: EXIT.ok };
+  }
+  if (p.status === "closed") return { line: `${p.id} was closed without being used.`, code: EXIT.failed };
+  const sofar = used.length ? `so far the user ${used.join(", ")}` : "nothing typed or copied yet";
+  return { line: `${p.id} still open (it closes ${relative(p.expiresAt)}); ${sofar}. Run \`locked wait ${p.id}\` to keep waiting.`, code: EXIT.pending };
+}
+
+const shareUsed = (e: ShareEvent) => e.event === "copied" || e.event === "shown";
+
+/** Follows a phone share until every field was copied or shown, it closes, or the time runs out. */
+async function followShare(id: string, timeoutS: number, onEvent: (e: ShareEvent) => void): Promise<ShareSummary> {
+  const deadline = Date.now() + Math.min(timeoutS, WAIT_MAX_S) * 1000;
+  let seen = 0;
+  for (;;) {
+    const left = Math.max(0, Math.min(25, Math.floor((deadline - Date.now()) / 1000)));
+    const { share: s } = await api<{ share: ShareSummary }>("GET", `/api/shares/${id}/wait?timeout=${left}&after=${seen}`);
+    for (const e of s.events.slice(seen)) onEvent(e);
+    seen = s.events.length;
+    const allUsed = s.fields.every((f) => s.events.some((e) => e.field === f && shareUsed(e)));
+    if (s.status === "closed" || s.status === "failed" || allUsed || Date.now() >= deadline - 500) return s;
+  }
+}
+
+function printShareEvent(e: ShareEvent) {
+  if (e.event === "delivered") out("The notification reached the phone.");
+  else if (e.event === "opened") out("The user opened it on the phone.");
+  else if (e.event === "unlocked") out("The user unlocked it on the phone.");
+  else if (shareUsed(e)) out(`The user ${e.event === "shown" ? "showed" : "copied"} ${e.field} on the phone.`);
+}
+
+function describeShare(s: ShareSummary): { line: string; code: number } {
+  const used = [...new Set(s.events.filter(shareUsed).map((e) => `${e.event === "shown" ? "showed" : "copied"} ${e.field}`))];
+  const allUsed = s.fields.every((f) => s.events.some((e) => e.field === f && shareUsed(e)));
+  const has = (event: string) => s.events.some((e) => e.event === event);
+  if (s.status === "failed") return { line: `${s.id} failed: ${s.error ?? "unknown error"}`, code: EXIT.failed };
+  if (used.length && (allUsed || s.status === "closed")) {
+    return { line: `${s.id}: on the phone, the user ${used.join(", ")}. ${s.status === "closed" ? "It's closed now." : `It closes on its own ${relative(s.expiresAt)}.`}`, code: EXIT.ok };
+  }
+  if (s.status === "closed") {
+    return { line: `${s.id} closed ${has("unlocked") ? "after the user unlocked it, without copying or showing anything" : "without being unlocked"}.`, code: EXIT.failed };
+  }
+  const sofar = used.length
+    ? `so far the user ${used.join(", ")}`
+    : has("unlocked")
+      ? "unlocked, nothing copied yet"
+      : has("opened")
+        ? "opened, not unlocked yet"
+        : has("delivered")
+          ? "the notification arrived, not opened yet"
+          : "not opened yet";
+  return { line: `${s.id} is on the phone (it closes ${relative(s.expiresAt)}); ${sofar}. Run \`locked wait ${s.id}\` to keep waiting.`, code: EXIT.pending };
+}
+
+async function waitPairing(id: string, timeoutS: number): Promise<PairingSummary> {
+  const deadline = Date.now() + Math.min(timeoutS, WAIT_MAX_S) * 1000;
+  for (;;) {
+    const left = Math.max(0, Math.min(25, Math.floor((deadline - Date.now()) / 1000)));
+    const { pairing } = await api<{ pairing: PairingSummary }>("GET", `/api/pairings/${id}/wait?timeout=${left}`);
+    if (pairing.status !== "pending" || Date.now() >= deadline - 500) return pairing;
+  }
+}
+
+function describePairing(p: PairingSummary): { line: string; code: number } {
+  if (p.status === "paired") {
+    const push = p.pushOk
+      ? "A first notification went to it."
+      : "But the first notification didn't go through: check that notifications for Locked are allowed on the phone, then run `locked phone test`.";
+    return { line: `Paired “${p.name}” (${p.deviceId}). ${push}`, code: p.pushOk ? EXIT.ok : EXIT.failed };
+  }
+  if (p.status === "expired") return { line: `${p.id} expired before the phone finished. Run \`locked phone pair\` again.`, code: EXIT.failed };
+  return { line: `${p.id} is waiting for the phone (expires ${relative(p.expiresAt)}). Run \`locked wait ${p.id}\` to keep waiting.`, code: EXIT.pending };
+}
+
+/** Seconds: a bare number, or a duration like 90s, 10m, 1h. */
+const seconds = (v: unknown) => (v === undefined ? undefined : /^\d+$/.test(String(v)) ? Number(v) : duration(String(v)) / 1000);
+
+/** `lk_…` ids pass through; anything else is looked up by label or site among stored secrets. */
+async function resolveId(query: string | undefined, usage: string): Promise<string> {
+  if (!query) throw new CliError(usage);
+  if (/^lk_[a-z0-9]+$/i.test(query)) return query;
+  return (await resolveRequest(query)).id;
+}
+
+async function resolveRequest(query: string): Promise<RequestSummary> {
+  if (/^lk_[a-z0-9]+$/i.test(query)) return (await api<{ request: RequestSummary }>("GET", `/api/requests/${query}`)).request;
+  const { requests } = await api<{ requests: RequestSummary[] }>("GET", "/api/requests?stored=1&limit=1000");
+  const m = matchRequest(requests, query);
+  if (m.ok) return m.request;
+  if (m.reason === "none") throw new CliError(`no stored secret matches "${query}" (see: locked creds)`);
+  const lines = m.candidates.map((r) => `  ${r.id}  ${r.label}${r.site ? `  (${r.site})` : ""}`);
+  throw new CliError(`"${query}" matches ${m.candidates.length} stored secrets; use one of these ids:\n${lines.join("\n")}`);
+}
+
 function describeRequest(r: RequestSummary): { line: string; code: number } {
   const fields = r.fields.map((f) => f.name).join(", ");
   switch (r.status) {
     case "filled": {
       const use =
         r.level === "sealed"
-          ? `Sealed: use it with locked inject|exec|copy ${r.id} (each use asks the user).`
-          : `Use it: locked inject ${r.id} · locked exec ${r.id} -- <cmd> · locked copy ${r.id} <field>`;
+          ? `Sealed: use it with locked inject|exec|copy|panel ${r.id} (each use asks the user).`
+          : `Use it: locked inject ${r.id} · locked exec ${r.id} -- <cmd> · locked panel ${r.id} · locked copy ${r.id} <field>`;
       return { line: `${r.id} filled (${fields}). ${use}`, code: EXIT.ok };
     }
     case "pending": {
@@ -207,8 +330,26 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
 
   async wait(argv) {
     const { values: o, positionals: [id] } = args(argv, { timeout: { type: "string" } });
-    if (!id) throw new CliError("usage: locked wait <lk_…|ap_…>");
+    if (!id) throw new CliError("usage: locked wait <lk_…|ap_…|pn_…|ps_…|pr_…>");
     const timeout = Number(o.timeout ?? WAIT_DEFAULT_S);
+    if (id.startsWith("ps_")) {
+      const s = await followShare(id, timeout, o.json ? () => {} : printShareEvent);
+      const d = describeShare(s);
+      out(o.json ? JSON.stringify(s) : d.line);
+      return d.code;
+    }
+    if (id.startsWith("pr_")) {
+      const p = await waitPairing(id, timeout);
+      const d = describePairing(p);
+      out(o.json ? JSON.stringify(p) : d.line);
+      return d.code;
+    }
+    if (id.startsWith("pn_")) {
+      const p = await followPanel(id, timeout, o.json ? () => {} : printPanelEvent);
+      const d = describePanel(p);
+      out(o.json ? JSON.stringify(p) : d.line);
+      return d.code;
+    }
     if (id.startsWith("ap_")) {
       const a = await waitApproval(id, timeout);
       const d = describeApproval(a);
@@ -224,6 +365,21 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
   async status(argv) {
     const { values: o, positionals: [id] } = args(argv, {});
     if (!id) return commands.list!(argv);
+    if (id.startsWith("pn_")) {
+      const { panel } = await api<{ panel: PanelSummary }>("GET", `/api/panels/${id}`);
+      out(o.json ? JSON.stringify(panel) : describePanel(panel).line);
+      return;
+    }
+    if (id.startsWith("ps_")) {
+      const { share } = await api<{ share: ShareSummary }>("GET", `/api/shares/${id}`);
+      out(o.json ? JSON.stringify(share) : describeShare(share).line);
+      return;
+    }
+    if (id.startsWith("pr_")) {
+      const { pairing } = await api<{ pairing: PairingSummary }>("GET", `/api/pairings/${id}`);
+      out(o.json ? JSON.stringify(pairing) : describePairing(pairing).line);
+      return;
+    }
     if (id.startsWith("ap_")) {
       const { approval } = await api("GET", `/api/approvals/${id}`);
       out(o.json ? JSON.stringify(approval) : describeApproval(approval).line);
@@ -242,7 +398,8 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
   },
 
   async list(argv) {
-    const { values: o } = args(argv, { limit: { type: "string" } });
+    const { values: o } = args(argv, { limit: { type: "string" }, stored: { type: "boolean" } });
+    if (o.stored) return commands.creds!(argv.filter((a) => a !== "--stored"));
     const { requests } = (await api("GET", `/api/requests?limit=${Number(o.limit ?? 20)}`)) as { requests: RequestSummary[] };
     if (o.json) return out(JSON.stringify(requests));
     if (requests.length === 0) return out("No requests yet. Create one with: locked request --label … --login");
@@ -251,19 +408,142 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
     }
   },
 
+  /** The secrets you can use right now. */
+  async creds(argv) {
+    const { values: o } = args(argv, { limit: { type: "string" } });
+    const { requests } = (await api("GET", `/api/requests?stored=1&limit=${Number(o.limit ?? 200)}`)) as { requests: RequestSummary[] };
+    if (o.json) return out(JSON.stringify(requests));
+    if (requests.length === 0) return out("Nothing stored. Secrets show up here once someone fills a request.");
+    for (const r of requests) {
+      const kept = r.secretExpiresAt ? `wiped ${relative(r.secretExpiresAt)}` : "kept until revoked";
+      out(`${r.id}  ${r.level.padEnd(6)} ${r.label}${r.site ? `  (${r.site})` : ""}  [${r.fields.map((f) => f.name).join(", ")}]  · ${kept} · used ${r.useCount}×`);
+    }
+  },
+
   async get(argv) {
-    const { values: o, positionals: [id] } = args(argv, { field: { type: "string", multiple: true } });
-    if (!id) throw new CliError("usage: locked get <id> [--field name]");
-    const only = list(o.field as string[] | undefined);
-    const r = await api<{ values: Record<string, string> }>("POST", `/api/requests/${id}/reveal`, { only });
+    const { values: o, positionals: [query] } = args(argv, { field: { type: "string", multiple: true }, copy: { type: "boolean" }, clear: { type: "string" } });
+    if (!query) throw new CliError("usage: locked get <id|name> [--field name] [--copy [--clear 30]]");
+    const req = await resolveRequest(query);
+    const sealed = req.level === "sealed";
+    let only = list(o.field as string[] | undefined);
+    if (o.copy) {
+      const { clipboardSupported, copySecret } = await import("./clipboard.ts");
+      if (!clipboardSupported()) throw new CliError("clipboard copy only works on macOS");
+      const field = only?.[0] ?? (req.fields.find((f) => /password|apikey|otp/.test(f.type)) ?? req.fields[0])?.name;
+      if (!field) throw new CliError(`${req.id} has no fields`);
+      if (sealed) err(`${req.id} is sealed: confirm with Touch ID on the Mac…`);
+      const r = await api<{ values: Record<string, string> }>("POST", `/api/requests/${req.id}/reveal`, { only: [field], deviceAuth: sealed });
+      const value = r.values[field];
+      if (!value) throw new CliError(`${req.id} has no value for ${field}`);
+      const clearAfterSec = Number(o.clear ?? 30);
+      await copySecret(value, { clearAfterSec });
+      return out(`Copied ${field} of ${req.label} (${req.id}); the clipboard clears in ${clearAfterSec} s.`);
+    }
+    // A sealed value only prints into a real terminal, never into a pipe or an agent's tool output.
+    if (sealed && !process.stdout.isTTY) {
+      throw new CliError(`${req.id} is sealed: it only prints in your own terminal, after Touch ID. Use --copy, or locked panel, inject or exec.`, 1, "sealed");
+    }
+    if (sealed) err(`${req.id} is sealed: confirm with Touch ID on the Mac…`);
+    const r = await api<{ values: Record<string, string> }>("POST", `/api/requests/${req.id}/reveal`, { only, deviceAuth: sealed });
     if (o.json) out(JSON.stringify(r.values));
     else if (only?.length === 1) out(r.values[only[0]!] ?? "");
     else for (const [k, v] of Object.entries(r.values)) out(`${k}: ${v}`);
-    err("(printed secret values: don't repeat them in chat)");
+    if (!process.stdout.isTTY) err("(printed secret values: don't repeat them in chat)");
+  },
+
+  async panel(argv) {
+    const { values: o, positionals: [query] } = args(argv, {
+      only: { type: "string", multiple: true },
+      purpose: { type: "string" },
+      timeout: { type: "string" },
+      "no-wait": { type: "boolean" },
+    });
+    const id = await resolveId(query, "usage: locked panel <id|name> [--only a,b] [--purpose …] [--timeout 120] [--no-wait]");
+    const { panel } = await api<{ panel: PanelSummary }>("POST", `/api/requests/${id}/panel`, {
+      only: list(o.only as string[] | undefined),
+      purpose: o.purpose,
+      timeoutSec: o.timeout ? Number(o.timeout) : undefined,
+    });
+    if (o.json && o["no-wait"]) return out(JSON.stringify(panel));
+    out(`Showing a Locked panel (${panel.id}) on the Mac, top right, for ${panel.fields.join(", ")} of ${id}.`);
+    out(`Tell the user: click the input on the page, then click Type in the panel (or Copy, then paste).`);
+    if (o["no-wait"]) return out(`Follow it with: locked wait ${panel.id}`);
+    const p = await followPanel(panel.id, WAIT_DEFAULT_S, o.json ? () => {} : printPanelEvent);
+    const d = describePanel(p);
+    out(o.json ? JSON.stringify(p) : d.line);
+    return d.code;
+  },
+
+  async phone(argv) {
+    const [sub, ...rest] = argv;
+    const usage = "usage: locked phone pair [--name …] | send <id> [--only a,b] [--purpose …] [--timeout 10m] | list | test [<dv_…>] | remove <dv_…>";
+    if (sub === "pair") {
+      const { values: o } = args(rest, { name: { type: "string" }, "no-wait": { type: "boolean" } });
+      const r = await api<{ pairing: PairingSummary; code: string; url: string }>("POST", "/api/pairings", { name: o.name });
+      if (o.json && o["no-wait"]) return out(JSON.stringify(r));
+      out(`Open this on the phone (it works once, for 10 minutes):`);
+      out(`  ${r.url}`);
+      out(`  code ${r.code}`);
+      out(`iPhone: open it in Safari, tap Share → Add to Home Screen, open Locked from the Home Screen, enter the code, then allow notifications and create the passkey.`);
+      out(`Android: open it in Chrome, allow notifications, create the passkey.`);
+      if (o["no-wait"]) return out(`Then: locked wait ${r.pairing.id}`);
+      const d = describePairing(await waitPairing(r.pairing.id, WAIT_DEFAULT_S));
+      out(d.line);
+      return d.code;
+    }
+    if (sub === "list" || sub === "devices") {
+      const { values: o } = args(rest, {});
+      const { devices } = await api<{ devices: DeviceSummary[] }>("GET", "/api/devices");
+      if (o.json) return out(JSON.stringify(devices));
+      if (devices.length === 0) return out("No phone is paired. Run `locked phone pair`.");
+      for (const d of devices) {
+        out(`${d.id}  ${d.name}  · paired ${relative(d.createdAt)} · last unlock ${relative(d.lastSeenAt)} · ${d.push ? "notifications on" : "notifications off (pair it again)"}`);
+      }
+      return;
+    }
+    if (sub === "remove") {
+      const { positionals: [id] } = args(rest, {});
+      if (!id) throw new CliError("usage: locked phone remove <dv_…>");
+      const { device } = await api<{ device: DeviceSummary }>("DELETE", `/api/devices/${id}`);
+      return out(`Removed ${device.name} (${device.id}). Its passkey no longer unlocks anything; delete it on the phone too (Settings → Passwords).`);
+    }
+    if (sub === "test") {
+      const { positionals: [id] } = args(rest, {});
+      const { results } = await api<{ results: Array<{ id: string; name: string; ok: boolean; error?: string }> }>("POST", "/api/devices/test", { deviceId: id });
+      for (const r of results) out(`${r.id}  ${r.name}  ${r.ok ? "sent" : `failed: ${r.error}`}`);
+      return results.every((r) => r.ok) ? EXIT.ok : EXIT.failed;
+    }
+    if (sub === "send") {
+      const { values: o, positionals: [query] } = args(rest, {
+        only: { type: "string", multiple: true },
+        purpose: { type: "string" },
+        timeout: { type: "string" },
+        device: { type: "string" },
+        "no-wait": { type: "boolean" },
+      });
+      const id = await resolveId(query, "usage: locked phone send <id|name> [--only a,b] [--purpose …] [--timeout 10m] [--device dv_…] [--no-wait]");
+      const { share } = await api<{ share: ShareSummary }>("POST", `/api/requests/${id}/phone`, {
+        only: list(o.only as string[] | undefined),
+        purpose: o.purpose,
+        timeoutSec: seconds(o.timeout),
+        device: o.device,
+      });
+      if (o.json && o["no-wait"]) return out(JSON.stringify(share));
+      const to = share.devices.filter((d) => d.ok).map((d) => d.name).join(", ");
+      out(`Sent ${share.fields.join(", ")} of ${id} to ${to} (${share.id}); it closes ${relative(share.expiresAt)}.`);
+      for (const d of share.devices.filter((x) => !x.ok)) err(`Not sent to ${d.name}: ${d.error}`);
+      out(`Tell the user: tap the Locked notification on your phone, unlock it, then Copy (or Show).`);
+      if (o["no-wait"]) return out(`Follow it with: locked wait ${share.id}`);
+      const s = await followShare(share.id, WAIT_DEFAULT_S, o.json ? () => {} : printShareEvent);
+      const d = describeShare(s);
+      out(o.json ? JSON.stringify(s) : d.line);
+      return d.code;
+    }
+    throw new CliError(usage);
   },
 
   async inject(argv) {
-    const { values: o, positionals: [id] } = args(argv, {
+    const { values: o, positionals: [query] } = args(argv, {
       origin: { type: "string" },
       only: { type: "string", multiple: true },
       map: { type: "string", multiple: true },
@@ -272,7 +552,7 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
       purpose: { type: "string" },
       base: { type: "string" },
     });
-    if (!id) throw new CliError("usage: locked inject <id> [--origin …] [--only a,b] [--map field=css] [--submit]");
+    const id = await resolveId(query, "usage: locked inject <id|name> [--origin …] [--only a,b] [--map field=css] [--submit]");
     const map: Record<string, string> = {};
     for (const m of (o.map as string[] | undefined) ?? []) {
       const i = m.indexOf("=");
@@ -296,12 +576,12 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
     const dash = argv.indexOf("--");
     if (dash === -1 || dash === argv.length - 1) throw new CliError("usage: locked exec <id> [--env VAR=field]... -- <command> [args…]");
     const cmd = argv.slice(dash + 1);
-    const { values: o, positionals: [id] } = args(argv.slice(0, dash), {
+    const { values: o, positionals: [query] } = args(argv.slice(0, dash), {
       env: { type: "string", multiple: true },
       approval: { type: "string" },
       purpose: { type: "string" },
     });
-    if (!id) throw new CliError("usage: locked exec <id> [--env VAR=field]... -- <command> [args…]");
+    const id = await resolveId(query, "usage: locked exec <id|name> [--env VAR=field]... -- <command> [args…]");
     const mapping: Array<[string, string]> = ((o.env as string[] | undefined) ?? []).map((m) => {
       const i = m.indexOf("=");
       if (i < 1) throw new CliError(`bad --env "${m}" (use VAR=field)`);
@@ -318,8 +598,9 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
   },
 
   async copy(argv) {
-    const { values: o, positionals: [id, field] } = args(argv, { clear: { type: "string" }, approval: { type: "string" }, purpose: { type: "string" } });
-    if (!id || !field) throw new CliError("usage: locked copy <id> <field> [--clear 30]");
+    const { values: o, positionals: [query, field] } = args(argv, { clear: { type: "string" }, approval: { type: "string" }, purpose: { type: "string" } });
+    if (!query || !field) throw new CliError("usage: locked copy <id|name> <field> [--clear 30]");
+    const id = await resolveId(query, "");
     const { clipboardSupported, copySecret } = await import("./clipboard.ts");
     if (!clipboardSupported()) throw new CliError("clipboard copy only works on macOS");
     const grant = await obtain(id, "copy", { only: [field], purpose: (o.purpose as string) ?? "paste into a form", approval: o.approval as string | undefined });
@@ -456,6 +737,13 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
     check(remote, "public URL", `${PUBLIC_URL}/healthz ${remote ? "reachable" : "unreachable (is the tunnel running? pm2 status locked-tunnel)"}`);
     const remoteApi = await fetch(`${PUBLIC_URL}/api/health`, { signal: AbortSignal.timeout(8_000) }).then((r) => r.status).catch(() => 0);
     if (remote) check(remoteApi === 404, "api via tunnel", remoteApi === 404 ? "not exposed (404)" : `answered ${remoteApi}!`);
+    if (process.platform === "darwin") {
+      const { APP, panelAppState } = await import("./native.ts");
+      const state = panelAppState();
+      // Not a failure: the server builds the app at startup and before each panel.
+      if (state === "ready") check(true, "native panel", APP);
+      else out(`– ${"native panel".padEnd(14)} ${state === "missing" ? "not built yet" : "out of date"}; Locked builds it on start and before a panel (needs the Xcode Command Line Tools)`);
+    }
     const skill = skillTarget();
     check(existsSync(join(skill, "SKILL.md")), "claude skill", existsSync(skill) ? skill : "not installed (locked install-skill)");
     return bad ? EXIT.failed : EXIT.ok;
@@ -497,16 +785,23 @@ const HELP = `locked: hand secrets to Claude through a link instead of the chat.
 Ask
   locked request --label "GitHub login" --site github.com --login [--reason …]
                  [--field name[:type][?]]… [--level sealed] [--ttl 15m] [--keep once|1h|24h|forever] [--wait]
-  locked wait <lk_…|ap_…> [--timeout 110]   exit 0 done · 2 still waiting (run again) · 1 declined/expired
-  locked status [<id>] · locked list · locked audit [<id>]
+  locked wait <lk_…|ap_…|pn_…|ps_…|pr_…> [--timeout 110]   exit 0 done · 2 still waiting (run again) · 1 declined/expired
+  locked status [<id>] · locked list [--stored] · locked creds · locked audit [<id>]
 
-Use
+Use (<id> is an lk_… id, or a name: a label or site of a stored secret, like "github")
   locked inject <id> [--origin …] [--only a,b] [--map field=css]… [--submit]   prints a one-time autofill snippet
+  locked panel <id> [--only a,b] [--purpose …] [--timeout 120] [--no-wait]    Mac panel: the user clicks Type or Copy
   locked exec <id> [--env VAR=field]… -- <command…>                           env LOCKED_<FIELD>, output redacted
   locked copy <id> <field> [--clear 30]                                       clipboard, then cmd+V
-  locked get <id> [--field f]                                                 prints values (normal level only)
+  locked get <id> [--field f] [--copy [--clear 30]]                           prints values; sealed: Touch ID, your terminal only
   locked revoke <id>
+  locked phone send <id> [--only a,b] [--purpose …] [--timeout 10m]          notification on the user's phone: unlock, then Copy or Show
   Sealed requests: inject/exec/copy exit 3 with an approval link; then add --approval ap_…
+  panel and get ask for Touch ID on the Mac instead; phone send asks for Face ID on the phone.
+
+Phone
+  locked phone pair [--name "iPhone"]   once: a link and code to open on the phone (passkey + notifications)
+  locked phone list · locked phone test [<dv_…>] · locked phone remove <dv_…>
 
 Run
   locked setup [--tunnel] · locked serve [--tunnel] · locked tunnel setup|run|status

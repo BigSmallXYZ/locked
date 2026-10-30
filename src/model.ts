@@ -25,7 +25,7 @@ export type Level = "normal" | "sealed";
 export type Retention = "once" | "1h" | "24h" | "forever";
 export const RETENTIONS: Retention[] = ["once", "1h", "24h", "forever"];
 export type Status = "pending" | "filled" | "declined" | "expired" | "revoked";
-export type Via = "inject" | "exec" | "copy" | "get";
+export type Via = "inject" | "exec" | "copy" | "get" | "panel" | "phone";
 
 /** Embedded in the fill page as <script type="application/json" id="locked-data">. */
 export type FillPageData = {

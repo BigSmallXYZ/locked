@@ -79,6 +79,8 @@ export async function openJson<T>(key: CryptoKey, blob: Uint8Array, aad: string)
 //   ct     = AES-GCM(key, iv, JSON(values), aad = requestId)
 
 export const FILL_INFO = "locked/fill/v1";
+/** The same construction run the other way: the phone page makes the key, the server seals to it. */
+export const PHONE_INFO = "locked/phone/v1";
 
 export type FillEnvelope = {
   v: 1;
@@ -96,12 +98,12 @@ export async function newFillKeypair(): Promise<{ publicKey: string; privateJwk:
   return { publicKey, privateJwk };
 }
 
-async function fillAesKey(privateKey: CryptoKey, peerPublicRaw: Bytes, salt: Bytes) {
+async function fillAesKey(privateKey: CryptoKey, peerPublicRaw: Bytes, salt: Bytes, info = FILL_INFO) {
   const peer = await subtle.importKey("raw", peerPublicRaw, { name: "ECDH", namedCurve: "P-256" }, false, []);
   const shared = await subtle.deriveBits({ name: "ECDH", public: peer }, privateKey, 256);
   const ikm = await subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
   return subtle.deriveKey(
-    { name: "HKDF", hash: "SHA-256", salt, info: enc.encode(FILL_INFO) },
+    { name: "HKDF", hash: "SHA-256", salt, info: enc.encode(info) },
     ikm,
     { name: "AES-GCM", length: 256 },
     false,
@@ -109,7 +111,7 @@ async function fillAesKey(privateKey: CryptoKey, peerPublicRaw: Bytes, salt: Byt
   );
 }
 
-export async function openFillEnvelope<T = unknown>(privateJwk: string, envelope: FillEnvelope, requestId: string): Promise<T> {
+export async function openFillEnvelope<T = unknown>(privateJwk: string, envelope: FillEnvelope, requestId: string, info = FILL_INFO): Promise<T> {
   if (envelope?.v !== 1) throw new Error("unsupported envelope");
   const privateKey = await subtle.importKey(
     "jwk",
@@ -118,7 +120,7 @@ export async function openFillEnvelope<T = unknown>(privateJwk: string, envelope
     false,
     ["deriveBits"],
   );
-  const key = await fillAesKey(privateKey, b64u.decode(envelope.epk), b64u.decode(envelope.salt));
+  const key = await fillAesKey(privateKey, b64u.decode(envelope.epk), b64u.decode(envelope.salt), info);
   const plain = await subtle.decrypt(
     { name: "AES-GCM", iv: b64u.decode(envelope.iv), additionalData: enc.encode(requestId) },
     key,
@@ -128,11 +130,13 @@ export async function openFillEnvelope<T = unknown>(privateJwk: string, envelope
 }
 
 /** What the browser does. Used by tests; the page uses web/fill-crypto.js. */
-export async function sealFillEnvelope(publicKey: string, data: unknown, requestId: string): Promise<FillEnvelope> {
+export async function sealFillEnvelope(publicKey: string, data: unknown, requestId: string, info = FILL_INFO): Promise<FillEnvelope> {
+  const peer = b64u.decode(publicKey);
+  if (peer.length !== 65 || peer[0] !== 4) throw new Error("not a P-256 public key");
   const eph = (await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"])) as CryptoKeyPair;
   const salt = new Uint8Array(randomBytes(16));
   const iv = new Uint8Array(randomBytes(12));
-  const key = await fillAesKey(eph.privateKey, b64u.decode(publicKey), salt);
+  const key = await fillAesKey(eph.privateKey, peer, salt, info);
   const ct = await subtle.encrypt({ name: "AES-GCM", iv, additionalData: enc.encode(requestId) }, key, enc.encode(JSON.stringify(data)));
   return {
     v: 1,

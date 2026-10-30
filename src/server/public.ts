@@ -14,6 +14,17 @@ import {
   type Ctx,
 } from "../requests.ts";
 import type { ApprovePost, FillPost } from "../model.ts";
+import {
+  pairBegin,
+  pairFinish,
+  shareChallenge,
+  shareDelivered,
+  shareEvent,
+  shareInfo,
+  shareUnlock,
+  vapidKeys,
+  type Pusher,
+} from "./phone.ts";
 
 export const WEB_DIR = join(import.meta.dir, "../../web");
 
@@ -27,6 +38,9 @@ const PAGE_CSP = [
   "base-uri 'none'",
   "frame-ancestors 'none'",
 ].join("; ");
+
+// The phone app also needs its manifest and service worker.
+const PHONE_CSP = `${PAGE_CSP}; manifest-src 'self'; worker-src 'self'`;
 
 const BASE_HEADERS: Record<string, string> = {
   "Cache-Control": "no-store",
@@ -65,11 +79,11 @@ function dataScript(data: unknown) {
   return `<script type="application/json" id="locked-data">${text}</script>`;
 }
 
-async function page(name: string, data: unknown, status = 200) {
+async function page(name: string, data: unknown, status = 200, csp = PAGE_CSP) {
   const path = join(WEB_DIR, name);
   const template = existsSync(path) ? await Bun.file(path).text() : `<!doctype html><title>Locked</title><!--LOCKED_DATA--><p>Locked</p>`;
   const html = template.replace("<!--LOCKED_DATA-->", dataScript(data));
-  return new Response(html, { status, headers: headers({ "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": PAGE_CSP }) });
+  return new Response(html, { status, headers: headers({ "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": csp }) });
 }
 
 async function notFound() {
@@ -143,7 +157,44 @@ function errorJson(err: unknown) {
   return json({ ok: false, code: "internal", error: "something went wrong" }, 500);
 }
 
-export function publicHandler(ctx: Ctx) {
+/** /phone/…: the paired phone's web app (web/phone.*) and the API it calls. */
+async function phoneRoute(ctx: Ctx, pusher: Pusher, req: Request, path: string[], ip: string): Promise<Response | null> {
+  const [first, kind, arg, action, ...extra] = path; // after "/phone"
+  const m = req.method;
+  if (first === "" && path.length === 1 && m === "GET") return page("phone.html", {}, 200, PHONE_CSP);
+  if (first === "sw.js" && path.length === 1 && m === "GET") {
+    return new Response(Bun.file(join(WEB_DIR, "phone-sw.js")), { headers: headers({ "Content-Type": TYPES.js! }) });
+  }
+  if (first === "manifest.webmanifest" && path.length === 1 && m === "GET") {
+    return new Response(Bun.file(join(WEB_DIR, "phone.webmanifest")), { headers: headers({ "Content-Type": "application/manifest+json" }) });
+  }
+  if (first !== "api" || extra.length) return null;
+
+  if (limited(`phone:${ip}`, 60)) return json({ ok: false, code: "rate", error: "too many requests, wait a minute" }, 429);
+  if (kind === "info" && !arg && m === "GET") return json({ ok: true, vapidPublicKey: (await vapidKeys(ctx)).publicKey });
+  if (m !== "POST" && !(kind === "s" && !action && m === "GET")) return null;
+  if (m === "POST" && !sameSitePost(req)) return json({ ok: false, code: "forbidden", error: "forbidden" }, 403);
+
+  if (kind === "pair" && !action) {
+    if (limited(`pair:${ip}`, 10)) return json({ ok: false, code: "rate", error: "too many attempts, wait a minute" }, 429);
+    if (arg === "begin") return json({ ok: true, ...(await pairBegin(ctx, await readJson(req, 4 * 1024))) });
+    if (arg === "finish") {
+      const input = await readJson<Parameters<typeof pairFinish>[2]>(req, 32 * 1024);
+      return json({ ok: true, ...(await pairFinish(ctx, pusher, { ...input, userAgent: req.headers.get("user-agent") ?? "" })) });
+    }
+    return null;
+  }
+  if (kind === "s" && arg && TOKEN.test(arg)) {
+    if (!action && m === "GET") return json({ ok: true, ...shareInfo(ctx, arg) });
+    if (action === "delivered") return json({ ok: true, ...shareDelivered(ctx, arg) });
+    if (action === "challenge") return json({ ok: true, ...shareChallenge(ctx, arg) });
+    if (action === "unlock") return json({ ok: true, ...(await shareUnlock(ctx, arg, await readJson(req, 16 * 1024))) });
+    if (action === "event") return json({ ok: true, ...shareEvent(ctx, arg, await readJson(req, 4 * 1024)) });
+  }
+  return null;
+}
+
+export function publicHandler(ctx: Ctx, pusher: Pusher) {
   return async function fetch(req: Request, server: Server<unknown>): Promise<Response> {
     const url = new URL(req.url);
     const [, head, arg, ...rest] = url.pathname.split("/");
@@ -219,6 +270,12 @@ export function publicHandler(ctx: Ctx) {
         return new Response(file, {
           headers: headers({ "Content-Type": TYPES.js!, "Access-Control-Allow-Origin": "*", "Cross-Origin-Resource-Policy": "cross-origin" }),
         });
+      }
+
+      if (head === "phone") {
+        if (url.pathname === "/phone" && req.method === "GET") return new Response(null, { status: 301, headers: headers({ Location: "/phone/" }) });
+        const res = await phoneRoute(ctx, pusher, req, url.pathname.split("/").slice(2), ip);
+        if (res) return res;
       }
 
       if (head === "assets" && arg && ASSET.test(arg) && rest.length === 0 && req.method === "GET") {
