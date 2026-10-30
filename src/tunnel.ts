@@ -44,7 +44,7 @@ export function staticUrl(c: TunnelConfig): string | null {
 }
 
 /** Passkeys and installed phone apps belong to one hostname, so a URL that changes unpairs them. */
-export const urlChanges = (c: TunnelConfig) => c.provider === "quick" || (c.provider === "tunnelmole" && !c.host);
+export const urlChanges = (c: TunnelConfig) => c.provider === "quick" || ((c.provider === "ngrok" || c.provider === "tunnelmole") && !c.host);
 
 /**
  * Which header holds the real client address. Only headers the edge overwrites qualify: anything

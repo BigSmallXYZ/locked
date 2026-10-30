@@ -84,7 +84,8 @@ The fill page has to be reachable from wherever you open the link. `locked setup
 
 ```bash
 locked tunnel use quick                                  # cloudflared, no account, new address on each restart
-locked tunnel use ngrok --domain calm-otter.ngrok-free.app   # free account, stable address
+locked tunnel use ngrok                                  # free account, new address on each restart
+locked tunnel use ngrok --domain calm-otter.ngrok-free.app   # stable, with a domain reserved at ngrok
 locked tunnel use tunnelmole                             # open source, new address on each restart
 locked tunnel use cloudflare --hostname locked.example.com   # your own domain on Cloudflare
 locked tunnel use url https://locked.example.com         # any tunnel or proxy you already run
@@ -92,7 +93,7 @@ locked tunnel use none                                   # links only open on th
 locked restart
 ```
 
-Phone pairing needs an address that stays the same, so use ngrok or your own domain for that. Whichever you pick, only the form's port is exposed. The API that reads secrets stays on localhost. [Choosing a tunnel](docs/tunnels.md) compares them.
+Phone pairing needs an address that stays the same, so use a reserved ngrok domain or your own domain for that. Whichever you pick, only the form's port is exposed. The API that reads secrets stays on localhost. [Choosing a tunnel](docs/tunnels.md) compares them.
 
 ## Docs
 

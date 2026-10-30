@@ -26,7 +26,7 @@ locked setup
 
 This creates `~/.locked`, chooses a tunnel, installs the skill for the agents it finds, and starts the server. Read its output. It can run `brew install cloudflared` if no tunnel tool is installed; pass `--no-install` if the user doesn't want that.
 
-If the user asked for a particular tunnel, pass it, for example `locked setup --tunnel ngrok`. The choices are in [tunnels.md](tunnels.md). If they'll pair a phone, recommend `ngrok` or their own domain, because a quick tunnel's address changes on restart.
+If the user asked for a particular tunnel, pass it, for example `locked setup --tunnel ngrok`. The choices are in [tunnels.md](tunnels.md). If they'll pair a phone, recommend a reserved ngrok domain or their own domain, because other addresses change on restart.
 
 ## 3. Teach yourself the skill
 

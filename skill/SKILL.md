@@ -44,7 +44,7 @@ the `lk_…` id then.
 
 The server starts by itself when you run a command. `locked doctor` checks each part. If it reports
 no tunnel, links only open on this machine: `locked tunnel use quick`, then `locked restart`. A
-phone needs a stable address, so suggest `ngrok` or the user's own domain (see docs/tunnels.md).
+phone needs a stable address, so suggest a reserved ngrok domain or the user's own domain (see docs/tunnels.md).
 
 ## Workflow
 

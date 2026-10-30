@@ -5,7 +5,7 @@ Locked's form runs on `127.0.0.1:7410`. A tunnel gives that one port a public ht
 | | Account | Address | Phones | Install |
 |---|---|---|---|---|
 | `quick` (Cloudflare) | none | new on each restart | no | `brew install cloudflared` |
-| `ngrok` | free | stable | yes | `brew install ngrok`, then `ngrok config add-authtoken <token>` |
+| `ngrok` | free | new on each restart; stable with a reserved domain | only with a reserved domain | `brew install ngrok`, then `ngrok config add-authtoken <token>` |
 | `tunnelmole` | none | new on each restart; stable with a paid domain | only with a stable domain | `npm install -g tunnelmole` |
 | `cloudflare` (named tunnel) | Cloudflare, with a domain on it | yours | yes | `brew install cloudflared`, then `cloudflared tunnel login` |
 | `url` | whatever you run | yours | yes | nothing |
@@ -20,7 +20,7 @@ locked restart
 
 `locked tunnel` shows what's in use, and `locked doctor` checks that the address answers and that the agent API isn't exposed through it.
 
-**Start with `quick`** if you just want to try Locked. **Move to `ngrok` or your own domain** if you'll pair a phone, or if you want links to survive a restart.
+**Start with `quick`** if you just want to try Locked. **Move to a reserved ngrok domain or your own domain** if you'll pair a phone, or if you want links to survive a restart.
 
 ## Why a stable address matters
 
@@ -45,9 +45,9 @@ So you're trusting the provider for autofill, and against active attacks everywh
 
 ## ngrok
 
-`locked tunnel use ngrok` uses the free dev domain your account was given. Pass `--domain` to name a reserved one. Locked needs an ngrok agent recent enough for your account; if `locked serve` logs `ERR_NGROK_121`, run `ngrok update`.
+`locked tunnel use ngrok` takes whatever address ngrok assigns, and in our testing that changed on every start. Reserve a domain in the ngrok dashboard and pass it with `--domain` for one that stays. Locked needs an ngrok agent recent enough for your account; if `locked serve` logs `ERR_NGROK_121`, run `ngrok update`.
 
-Free accounts show a one-time warning page before a site's first visit in each browser. Click Visit Site once and it won't come back for a while. On a paid plan it doesn't appear.
+ngrok can show a warning page on a first visit from a browser on free accounts. If you see it, click Visit Site once. It didn't appear in our tests, and autofill worked through ngrok from a browser that had never visited the address.
 
 ## Your own domain on Cloudflare
 

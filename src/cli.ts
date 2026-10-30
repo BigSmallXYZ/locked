@@ -482,8 +482,8 @@ const commands: Record<string, (argv: string[]) => Promise<number | void>> = {
       const { values: o } = args(rest, { name: { type: "string" }, "no-wait": { type: "boolean" } });
       const t = await import("./tunnel.ts");
       const tunnel = t.loadTunnelConfig();
-      if (tunnel.provider === "none") throw new CliError("a phone needs an https address; set up a tunnel first (locked tunnel use ngrok, or cloudflare for your own domain)");
-      if (t.urlChanges(tunnel)) err("Warning: this tunnel gets a new address on restart, and that unpairs the phone. For a phone, prefer: locked tunnel use ngrok, or cloudflare for your own domain.");
+      if (tunnel.provider === "none") throw new CliError("a phone needs a fixed https address; set up a tunnel first (locked tunnel use ngrok --domain <reserved>, or cloudflare for your own domain)");
+      if (t.urlChanges(tunnel)) err("Warning: this tunnel gets a new address on restart, and that unpairs the phone. For a phone, use a fixed address: locked tunnel use ngrok --domain <reserved>, or cloudflare for your own domain.");
       const r = await api<{ pairing: PairingSummary; code: string; url: string }>("POST", "/api/pairings", { name: o.name });
       if (o.json && o["no-wait"]) return out(JSON.stringify(r));
       out(`Open this on the phone (it works once, for 10 minutes):`);
@@ -798,7 +798,7 @@ function describeTunnel(c: TunnelConfig) {
     case "quick":
       return "quick (cloudflared, no account; a new address on each restart)";
     case "ngrok":
-      return `ngrok${c.host ? ` (${c.host})` : ""}`;
+      return `ngrok${c.host ? ` (${c.host})` : " (a new address on each restart)"}`;
     case "tunnelmole":
       return `tunnelmole${c.host ? ` (${c.host})` : " (a new address on each restart)"}`;
     case "cloudflare":

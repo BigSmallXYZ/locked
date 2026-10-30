@@ -31,7 +31,8 @@ describe("config", () => {
     expect(urlChanges({ provider: "quick" })).toBe(true);
     expect(urlChanges({ provider: "tunnelmole" })).toBe(true);
     expect(urlChanges({ provider: "tunnelmole", host: "mine.tunnelmole.net" })).toBe(false);
-    expect(urlChanges({ provider: "ngrok" })).toBe(false);
+    expect(urlChanges({ provider: "ngrok" })).toBe(true);
+    expect(urlChanges({ provider: "ngrok", host: "calm-otter.ngrok-free.app" })).toBe(false);
   });
 
   test("client IP headers are only trusted where the edge overwrites them", () => {
